@@ -15,8 +15,8 @@ description: 检查中文文档写作/AI 味时使用。文尺 WenLint：中文�
 
 ## 完整工作流（六步，一次跑完）
 
-1. **定位文件**——用户没指明时按顺序自己找：工作区/家目录最近的 .md → 代码库 markdown（search_files 找含套话词的文件）→ 网络（URL 或能搜到的文档）。找不到才问。
-2. **运行 wenlint**——`wenlint <path> --json`（工具需已安装：`pip install -e <仓库路径>` 或 `python -m wenlint`）。若 wenlint 命令不存在，用本 skill 所在环境中能访问的安装方式，**不假设固定家目录路径**。
+1. **定位输入**——用户没指明时按顺序自己找：工作区/家目录最近的 .md → 代码库 markdown → 网络文档。若输入是飞书 `/docx/` 或 `/wiki/` URL，改走 `references/feishu.md`（`wenlint-feishu`）；本地路径（含字面名为 `feishu` 的文件）仍用 `wenlint`。用户只给裸 token 时，仅在其明确声明是飞书文档后才按飞书处理。找不到才问。
+2. **运行检查**——本地：`wenlint <path> --json`。飞书：见 `references/feishu.md`。若命令不存在，用本 skill 所在环境中能访问的安装方式，**不假设固定家目录路径**，也**不静默安装** Python/`lark-cli`。
 3. **四分类判断**——对每条 finding：先读 `review_hint`（规则已给判断方向），再看 `sentence/before/after` 理解语境：
    - `KEEP` 合理用法（学术审慎/领域术语/有语义的推测/引述示例词）→ 不改，说明理由
    - `REWRITE` 可直接根据上下文改（套话删、`是否能够`→能否、长句拆）
@@ -31,7 +31,8 @@ description: 检查中文文档写作/AI 味时使用。文尺 WenLint：中文�
    依据必须可追溯（文件:行/URL），禁止编造出处
 5. **只改确认要改的局部**——交互约定：
    - 用户只说"检查"→ 只给报告不修改
-   - 用户说"帮我修"→ 自动处理所有确定的 REWRITE，**最后给一份合并 diff**
+   - 本地用户说"帮我修"→ 自动处理所有确定的 REWRITE，**最后给一份合并 diff**
+   - 飞书用户要求写回 → 必须先总览再逐章批准（见 `references/feishu.md`）；未明确批准不写
    - VERIFY 找到依据的一起修改并注明来源；ASK 集中询问真正缺信息的项
    - 高风险/大范围改写才在写入前逐条确认；无依据不删不确定词（`可能/大概`）
    - 除非用户明确要"整体润色"，不做全文润色
@@ -40,12 +41,14 @@ description: 检查中文文档写作/AI 味时使用。文尺 WenLint：中文�
 ## 运行
 
 ```bash
-python -m wenlint 文档.md              # 文本输出（在 wenlint 包目录内或 pip install -e .）
+python -m wenlint 文档.md              # 本地文本输出
 python -m wenlint . --profile academic # 论文场景
 python -m wenlint 文档.md --json       # 结构化输出（供四分类流程消费）
 python -m wenlint . --fail-level warning  # CI：有 >= warning 时 exit 1
+wenlint-feishu <docx-or-wiki-url> --json  # 飞书只读检查（细节见 references/feishu.md）
 ```
 
+飞书 Docx/Wiki 的检查与写回见 `references/feishu.md`。
 ## 输出格式
 
 `文件:行:列  规则ID  级别  类别  message`（vale 风格）

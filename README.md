@@ -15,10 +15,23 @@ prd.md:76:1      S001  suggestion  超长句         94 chars
 
 ## 安装
 
+### Python 引擎（pipx / venv）
+
+需要 **Python 3.11+**（推荐 3.13；CI 覆盖 3.11 / 3.13 / 3.14）。运行时无第三方 Python 依赖；飞书能力另需本机 `lark-cli`。
+
 ```bash
-pip install -e .             # 本地安装，获得 wenlint 命令（仅标准库依赖）
+pipx install wenlint                 # 推荐：隔离安装，获得 wenlint 与 wenlint-feishu
+python -m pip install -e ".[test]"   # 开发：可编辑安装 + pytest
 # 或直接运行： python -m wenlint <path>
 ```
+
+### Codex Skill（npx skills）
+
+```bash
+npx skills add DreamStars1/WenLint --skill wenlint --agent codex --global
+```
+
+`npx skills` 只分发 Skill 文档与工作流，**不会**安装 Python 运行时或 `lark-cli`。飞书检查前请确认 `wenlint-feishu` 与 `lark-cli` 可用。
 
 ## 用法
 
@@ -28,12 +41,14 @@ wenlint docs/                       # 目录
 wenlint . --profile academic        # 论文场景（H002 学术词关闭、长句放宽 80）
 wenlint . --fail-level warning      # 严格门禁：有 >= warning 时 exit 1
 wenlint 文档.md --json              # 结构化输出（供 Skill/LLM 消费）
+wenlint-feishu <docx-or-wiki-url> --json   # 飞书 Docx/Wiki 只读检查
+wenlint-feishu apply <url> --patch-file m.json --json  # 仅应用已批准章节 patch
 ```
 
-**WenLint 不修改正文**——v0.1 核心定案：只做"发现"。
+**WenLint 不修改正文**——核心定案：只做"发现"。
+飞书写回由 Skill 逐章批准后，通过 `wenlint-feishu apply` 执行局部 `block_replace`；inspect 路径永不写入。
 发现结果 = 定位 + 规则 ID + 命中文本 + 上下文 + review_hint；
 判断/查证/改写全部交给 Skill 的 LLM（见下"职责划分"）。
-
 ## 规则
 
 | ID | 规则 | 级别 | 说明 |
