@@ -120,7 +120,10 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
         rid = rule["id"]
         if rid in disabled:
             continue
+        needs_semantic = rule.get("semantic", False)
         severity = sev_ov.get(rid, rule["severity"])
+        if needs_semantic:
+            severity = "candidate"   # 语义候选：不阻断 CI，交 LLM/人工裁决
         rpats, rblock = _COMPILED[rid]
 
         if rid == "S001":   # 超长句：逐行按句读拆，跳过表格行/低中文占比行

@@ -24,9 +24,11 @@ RULES = [
     {
         "id": "C002", "name": "buzzword", "category": "套话/废话填充",
         "severity": "warning", "message": "术语滥用「{w}」，换成大白话",
-        "patterns": ["赋能", "抓手", "颗粒度", "底层逻辑",
-                     "顶层设计", "多维度", "保驾护航"],
-        # "闭环"已移除：医疗/流程领域高频正当术语（处置闭环/反馈闭环/诊后闭环），误报率 >90%
+        "patterns": ["赋能", "抓手", "闭环", "颗粒度", "底层逻辑",
+                     "顶层设计", "多维度", "全链路", "保驾护航"],
+        # semantic=True：命中只是候选——"处置闭环"是领域术语（KEEP），
+        # "打造闭环"是空话（REWRITE），需 LLM 看上下文判断，纯规则判不了
+        "semantic": True,
         "fixable": False,
     },
     {
@@ -48,6 +50,7 @@ RULES = [
         "severity": "suggestion",
         "message": "模糊词「{w}」——论文/技术文档中如需保留学术审慎可忽略",
         "patterns": ["可能", "或许", "也许", "大约", "一定程度上", "某种程度"],
+        "semantic": True,   # 多数是合理风险提示/条件表达，需 LLM 判断是否无依据断言
         "fixable": False,
         # academic/formal profile 下降级（见 profiles.py）
     },
@@ -56,6 +59,7 @@ RULES = [
         "severity": "suggestion", "message": "「左右」歧义：时间/数量约数 or 空间方位？",
         "patterns": ["左右"],
         "block": r"左右(两边|两侧|两翼|左右|边|侧|手|翼|前后|上下)",  # 空间/方位义不报
+        "semantic": True,   # 约数 vs 空间需看语境，规则只挡明显空间义
         "fixable": False,
     },
     # ---------- E: 空洞强调 ----------

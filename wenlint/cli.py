@@ -17,7 +17,7 @@ from . import __version__
 from .engine import scan_text, fix_text
 from .profiles import PROFILES
 
-LEVEL_RANK = {"error": 3, "warning": 2, "suggestion": 1}
+LEVEL_RANK = {"error": 3, "warning": 2, "suggestion": 1, "candidate": 0}
 
 
 def collect_files(path):

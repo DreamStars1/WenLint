@@ -38,11 +38,11 @@ wenlint 文档.md --json              # 机器可读
 | ID | 规则 | 级别 | fixable | 说明 |
 |---|---|---|---|---|
 | C001 | cliche-intro 套话引导词 | warning | ✅ | `总而言之/值得注意的是/众所周知…`（词后接逗号/句读才删） |
-| C002 | buzzword 术语滥用 | warning | ❌ | `赋能/抓手/闭环/颗粒度…` |
+| C002 | buzzword 术语滥用 | candidate | ❌ | `赋能/抓手/闭环/颗粒度…`（语义判断：领域术语 KEEP / 空话 REWRITE） |
 | C003 | 套话 | warning | ✅ | `由此可见`（block：`由此可见一斑`） |
 | H001 | 模糊词（硬） | warning | ❌ | `大概/好像/似乎/差不多` |
-| H002 | 模糊词（软） | suggestion | ❌ | `可能/或许/也许…`（academic profile 关闭） |
-| H003 | `左右` 歧义 | suggestion | ❌ | `左右边/两侧/手/翼` 空间义自动豁免 |
+| H002 | 模糊词（软） | candidate | ❌ | `可能/或许/也许…`（academic profile 关闭；语义判断：合理 hedge KEEP / 无据断言 VERIFY） |
+| H003 | `左右` 歧义 | candidate | ❌ | `左右边/两侧/手/翼` 空间义自动豁免 |
 | E001 | 空洞强调 | suggestion | ❌ | `非常/十分/真的/超级…` |
 | R001 | 冗余动词 | suggestion | ❌ | `进行` + 动词（语境正则，如"进行分析"） |
 | R002 | 冗余表达 | suggestion | ✅ | `是否能够` → `能否` |
