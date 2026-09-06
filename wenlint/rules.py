@@ -95,7 +95,7 @@ RULES = [
     {
         "id": "S001", "name": "long-sentence", "category": "超长句",
         "severity": "suggestion", "message": "句子过长（{len}字 > {max}），建议拆分",
-        "max_len": 60,  # academic/instruction profile 调整
+        "max_len": 80,   # 文档默认 80；SKILL.md（instruction profile）收紧到 50
         "fixable": False,
     },
     # ---------- A: 文件结构（文件级规则）----------

@@ -47,7 +47,7 @@ wenlint 文档.md --json              # 机器可读
 | R001 | 冗余动词 | suggestion | ❌ | `进行` + 动词（语境正则，如"进行分析"） |
 | R002 | 冗余表达 | suggestion | ✅ | `是否能够` → `能否` |
 | D001 | 相邻重复词 | warning | ❌ | `语义风险，留给人工` |
-| S001 | 超长句 | suggestion | ❌ | `>60 字（academic 80）` |
+| S001 | 超长句 | suggestion | ❌ | 文档 80 字；SKILL.md 收紧 50 字 |
 
 ## 规则结构（不是"词=坏味"，是规则引擎）
 

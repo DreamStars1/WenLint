@@ -8,16 +8,17 @@
 """
 
 PROFILES = {
-    "general": {"disable": [], "severity_override": {}, "params": {}},
+    # 文档类（PRD/论文/报告）：叙述句可以长一些，80 字
+    "general": {"disable": [], "severity_override": {},
+                "params": {"S001": {"max_len": 80}}},
     "academic": {"disable": ["H002"], "severity_override": {},
                  "params": {"S001": {"max_len": 80}}},
     "product": {"disable": [], "severity_override": {},
-                "params": {"S001": {"max_len": 60}}},
+                "params": {"S001": {"max_len": 80}}},
     "formal": {"disable": [], "severity_override": {
         "H001": "warning", "E001": "warning", "C002": "error",
-    }, "params": {"S001": {"max_len": 60}}},
-    # 指令/技术文档（SKILL.md、README、操作手册）：句子常含命令/路径/术语，
-    # 60 字阈值不适用；结构问题（主文件过大）由 A900 文件级规则负责
+    }, "params": {"S001": {"max_len": 80}}},
+    # SKILL.md 指令文档：简单指令应该短句，50 字——长句说明已违反"指令要直接"
     "instruction": {"disable": [], "severity_override": {},
-                    "params": {"S001": {"max_len": 110}}},
+                    "params": {"S001": {"max_len": 50}}},
 }
