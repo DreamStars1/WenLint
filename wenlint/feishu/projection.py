@@ -17,6 +17,9 @@ _XML_LIMIT = 20 * 1024 * 1024
 _UNSAFE_MARKERS = ("<!DOCTYPE", "<!ENTITY")
 _HEADING_TAGS = {f"h{i}" for i in range(1, 10)}
 _INLINE_TAGS = {"b", "em", "u", "del", "span", "a", "i", "strong"}
+# Nested paragraph/list-item text under callout or list containers may write back
+# to the replaceable top-level block id when that id is known.
+_WRITABLE_NESTED_TAGS = {"p", "li"}
 _EXCLUDED_BLOCK_TAGS = {
     "pre",
     "code",
@@ -29,6 +32,14 @@ _EXCLUDED_BLOCK_TAGS = {
     "bitable",
     "cite",
     "synced",
+}
+# Omitted entirely from the analysis projection (never scannable or writable).
+_OMITTED_TAGS = {
+    "title",
+    "synced_reference",
+    "synced_source",
+    "synced-reference",
+    "synced-source",
 }
 
 
@@ -69,12 +80,31 @@ def project_xml(xml: str, ref: DocumentRef, revision_id: int) -> DocumentSnapsho
     projection_parts: list[str] = []
     source_map: list[SourceSpan] = []
     cursor = 0
+    emitted_block = False
 
-    children = list(root)
-    for index, block in enumerate(children):
-        cursor = _project_block(block, projection_parts, source_map, cursor)
-        if index != len(children) - 1:
+    for block in root:
+        block_parts: list[str] = []
+        block_map: list[SourceSpan] = []
+        _project_block(block, block_parts, block_map, 0)
+        if not block_parts:
+            continue
+        if emitted_block:
             cursor = _append_synthetic("\n", projection_parts, source_map, cursor)
+        for span in block_map:
+            source_map.append(
+                SourceSpan(
+                    projection_start=span.projection_start + cursor,
+                    projection_end=span.projection_end + cursor,
+                    block_id=span.block_id,
+                    node_path=span.node_path,
+                    source_start=span.source_start,
+                    source_end=span.source_end,
+                    writable=span.writable,
+                )
+            )
+        projection_parts.extend(block_parts)
+        cursor += sum(len(part) for part in block_parts)
+        emitted_block = True
 
     projection = "".join(projection_parts)
     sections = build_sections(root)
@@ -273,11 +303,17 @@ def _project_block(
     tag = local_tag(block.tag)
     block_id = block.attrib.get("block-id") or block.attrib.get("block_id")
 
+    if tag in _OMITTED_TAGS or tag in _EXCLUDED_BLOCK_TAGS:
+        return cursor
+
     if tag in _HEADING_TAGS:
         level = int(tag[1])
         cursor = _append_synthetic("#" * level + " ", parts, source_map, cursor)
         # Headings stay in chapter context but are never auto-writable (§10.2).
         return _project_element(block, block_id, parts, source_map, cursor, False, ())
+
+    if tag in {"ol", "ul"}:
+        return _project_list(block, block_id, parts, source_map, cursor, tag)
 
     if tag in {"li", "checkbox"}:
         cursor = _append_synthetic("- ", parts, source_map, cursor)
@@ -290,10 +326,68 @@ def _project_block(
     if tag in {"p", "callout"}:
         return _project_element(block, block_id, parts, source_map, cursor, True, ())
 
-    if tag in _EXCLUDED_BLOCK_TAGS:
-        return cursor
-
     return _project_element(block, block_id, parts, source_map, cursor, False, ())
+
+
+def _project_list(
+    block: Element,
+    block_id: str | None,
+    parts: list[str],
+    source_map: list[SourceSpan],
+    cursor: int,
+    list_tag: str,
+) -> int:
+    """Project a top-level ordered or unordered list container.
+
+    List markers and item separators are synthetic. Item text maps to the
+    replaceable top-level list ``block_id`` when present; otherwise the shape
+    remains scannable but non-writable.
+
+    Args:
+        block: ``ol`` or ``ul`` element.
+        block_id: Top-level list block id when Feishu provided one.
+        parts: Projection fragments.
+        source_map: SourceMap accumulator.
+        cursor: Current projection offset.
+        list_tag: Normalized ``ol`` or ``ul``.
+
+    Returns:
+        Updated projection cursor.
+    """
+    writable = block_id is not None
+    item_number = 0
+    emitted_item = False
+    for index, child in enumerate(block):
+        child_tag = local_tag(child.tag)
+        child_path = (index,)
+        if child_tag != "li":
+            # Unsupported siblings stay visible for diagnostics but never writable.
+            cursor = _project_element(
+                child,
+                block_id,
+                parts,
+                source_map,
+                cursor,
+                False,
+                child_path,
+            )
+            continue
+        if emitted_item:
+            cursor = _append_synthetic("\n", parts, source_map, cursor)
+        item_number += 1
+        marker = f"{item_number}. " if list_tag == "ol" else "- "
+        cursor = _append_synthetic(marker, parts, source_map, cursor)
+        cursor = _project_element(
+            child,
+            block_id,
+            parts,
+            source_map,
+            cursor,
+            writable,
+            child_path,
+        )
+        emitted_item = True
+    return cursor
 
 
 def _project_element(
@@ -336,7 +430,13 @@ def _project_element(
     for index, child in enumerate(element):
         child_path = path + (index,)
         child_tag = local_tag(child.tag)
-        if child_tag == "a":
+        if child_tag in _OMITTED_TAGS:
+            # Resource/metadata subtrees never enter the projection; preserve
+            # any trailing text owned by the parent via child.tail below.
+            pass
+        elif child_tag == "br":
+            cursor = _append_synthetic("\n", parts, source_map, cursor)
+        elif child_tag == "a":
             if child.text:
                 cursor = _append_text(
                     child.text,
@@ -377,6 +477,16 @@ def _project_element(
                 source_map,
                 cursor,
                 writable,
+                child_path,
+            )
+        elif child_tag in _WRITABLE_NESTED_TAGS and writable:
+            cursor = _project_element(
+                child,
+                block_id,
+                parts,
+                source_map,
+                cursor,
+                True,
                 child_path,
             )
         elif child_tag in _EXCLUDED_BLOCK_TAGS:
