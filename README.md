@@ -24,30 +24,32 @@ pip install -e .             # 本地安装，获得 wenlint 命令
 ## 用法
 
 ```bash
-wenlint 文档.md                     # review
+wenlint 文档.md                     # review：发现候选
 wenlint docs/                       # 目录
 wenlint . --profile academic        # 论文场景（H002 学术词关闭、长句放宽 80）
-wenlint README.md --fix             # 修复预览（不写盘）
-wenlint README.md --fix --apply     # 写回（先备份 .bak）
 wenlint . --fail-level warning      # CI：有 >= warning 时 exit 1
-wenlint 文档.md --json              # 机器可读
+wenlint 文档.md --json              # 结构化输出（供 Skill/LLM 消费）
 ```
+
+**WenLint 不修改正文**——v0.1 核心定案：它只做"发现"
+（定位 + 规则 ID + 命中文本 + 上下文 + review_hint），
+判断/查证/改写全部交给 Skill 的 LLM（见下"职责划分"）。
 
 ## 规则
 
-| ID | 规则 | 级别 | fixable | 说明 |
-|---|---|---|---|---|
-| C001 | cliche-intro 套话引导词 | warning | ✅ | `总而言之/值得注意的是/众所周知…`（词后接逗号/句读才删） |
-| C002 | buzzword 术语滥用 | candidate | ❌ | `赋能/抓手/闭环/颗粒度…`（语义判断：领域术语 KEEP / 空话 REWRITE） |
-| C003 | 套话 | warning | ✅ | `由此可见`（block：`由此可见一斑`） |
-| H001 | 模糊词（硬） | warning | ❌ | `大概/好像/似乎/差不多` |
-| H002 | 模糊词（软） | candidate | ❌ | `可能/或许/也许…`（academic profile 关闭；语义判断：合理 hedge KEEP / 无据断言 VERIFY） |
-| H003 | `左右` 歧义 | candidate | ❌ | `左右边/两侧/手/翼` 空间义自动豁免 |
-| E001 | 空洞强调 | suggestion | ❌ | `非常/十分/真的/超级…` |
+| ID | 规则 | 级别 | 说明 |
+|---|---|---|---|
+| C001 | cliche-intro 套话引导词 | warning | `总而言之/值得注意的是/众所周知…`（词后接逗号/句读才删） |
+| C002 | buzzword 术语滥用 | candidate | `赋能/抓手/闭环/颗粒度…`（语义判断：领域术语 KEEP / 空话 REWRITE） |
+| C003 | 套话 | warning | `由此可见`（block：`由此可见一斑`） |
+| H001 | 模糊词（硬） | warning | `大概/好像/似乎/差不多` |
+| H002 | 模糊词（软） | candidate | `可能/或许/也许…`（academic profile 关闭；语义判断：合理 hedge KEEP / 无据断言 VERIFY） |
+| H003 | `左右` 歧义 | candidate | `左右边/两侧/手/翼` 空间义自动豁免 |
+| E001 | 空洞强调 | suggestion | `非常/十分/真的/超级…` |
 | R001 | 冗余动词 | suggestion | ❌ | `进行` + 动词（语境正则，如"进行分析"） |
 | R002 | 冗余表达 | suggestion | ✅ | `是否能够` → `能否` |
-| D001 | 相邻重复词 | warning | ❌ | `语义风险，留给人工` |
-| S001 | 超长句 | suggestion | ❌ | 文档 80 字；SKILL.md 收紧 50 字 |
+| D001 | 相邻重复词 | warning | `语义风险，留给人工` |
+| S001 | 超长句 | suggestion | 文档 80 字；SKILL.md 收紧 50 字 |
 
 ## 规则结构（不是"词=坏味"，是规则引擎）
 
@@ -66,50 +68,59 @@ wenlint 文档.md --json              # 机器可读
 `可能` 在论文里是重要学术审慎（epistemic hedge），在营销软文里则算含糊——所以分 H001/H002 级。
 `进行` 只有后接动词才算冗余——所以 R001 用语境正则。这才是 ESLint 式规则，不是敏感词扫描。
 
-## 安全 fix（Markdown-safe）
-
-fix 与 review 共用**等长 mask**：代码块、行内代码、URL、引号等受保护内容全部屏蔽。
-
-```
-请不要修改 `总而言之` 行内代码        → 不动
-我把"总而言之"作为例子              → 不动（引号保护）
-总而言之，这个方案很好              → 自动删（高置信）
-综上所述的方案需要讨论               → 不动（定语结构保护）
-```
-
 ## Markdown 智能与位置精确
 
 - 等长 mask（内容替换为等长空格）→ **行号列号与原文一一对应**，front matter 存在也不错位
 - 自动跳过：代码块、行内代码、图片、HTML、注释、表格行、标题行
 - 链接：URL 不查，**链接文字照查**
 
-## 两段式设计（semantic review 层）
+## 职责划分（v0.1 定案）
+
+**WenLint 是工具，Skill 是 Agent。**
+
+| WenLint（发现） | Skill / LLM（判断与修复） |
+| --- | --- |
+| Markdown-aware 定位 | 判断是否误报 |
+| 正则/词表/统计匹配 | 理解上下文 |
+| `可能`、`大概` 等候选发现 | 判断是真不确定还是懒得查 |
+| 冗余表达候选发现 | 根据语义重写 |
+| 输出行号、span、上下文、review_hint | 搜索文件库 |
+| 稳定、可测试 | 根据找到的依据修改 |
+| **不修改正文** | **负责 fix** |
+
+**Skill 对每条命中做四分类判断**（不是简单"改写"）：
 
 ```
-第一层 deterministic lint（本工具已实现）
-    词法/句法表面模式/重复/长度/Markdown 结构 —— 本地、快、可解释、可 CI
-
-第二层 semantic review（LLM 可选）
-    证据链检查：规则命中 = 候选，LLM 判断 + 检索验证后分级输出
+KEEP     无需修改（合理用法/学术审慎/领域术语）
+REWRITE  可直接根据上下文修改
+VERIFY   需先查已有资料再修改（搜到依据 → REWRITE + 附依据）
+ASK      资料也不足，需要作者确认（绝不在无依据时删"可能"）
 ```
 
-**候选 → 判断 → 证据 的流水线**（以模糊词为例）：
+**修复纪律**：LLM 只允许修改 WenLint 指出的局部，除非用户明确要求"整体润色"——
+避免从"检查`可能`是否合理"滑向"把整篇文风改一遍"。
 
-```
-词表命中（如"可能"）——只是候选，不是判决
-    ↓
-LLM 判断：这句话含可被事实核实的陈述吗？
-    ├─ 否 → 观点/推测/学术审慎 → 保留（不报）
-    └─ 是 ↓
-        检索依据（文件库/项目文档/可搜索的规范）
-        ├─ 找到可靠依据 → 建议改写（给依据出处）
-        └─ 找不到依据   → 提醒作者核实（无依据陈述）
+## 输出 Schema（--json，供 Skill 消费）
+
+```json
+{
+  "rule": "H002",
+  "type": "candidate",
+  "severity": "candidate",
+  "category": "模糊词",
+  "message": "模糊词「可能」——论文/技术文档中如需保留学术审慎可忽略",
+  "review_hint": "判断该陈述是否属于可从已有资料核实的事实；若是，优先检索资料…",
+  "file": "prd.md",
+  "line": 18,
+  "column": 7,
+  "text": "可能",
+  "sentence": "系统目前可能支持 Excel 批量导入。",
+  "before": "当前版本已经完成患者管理模块。",
+  "after": "具体能力以需求文档为准。"
+}
 ```
 
-输出类型严格区分，绝不混淆：
-- `lint warning` —— 确定性规则（本工具，可复现、可 CI）
-- `semantic advisory` —— LLM 判断（逻辑跳跃/论证空洞/主语漂移）
-- `evidence request` —— 检索型建议（建议改写/提醒核实，带依据链接）
+**不输出 `replacement`**——WenLint 不知道该怎么改，判断属于 Skill。
 
 
 ## 配置与扩展
@@ -130,11 +141,12 @@ python -m pytest tests/     # 22 个回归测试（mask/行号/fix 安全/CLI）
 ```
 wenlint/
 ├── wenlint/
-│   ├── rules.py         # 规则引擎定义（ID/语境/例外/profiles）
-│   ├── engine.py        # 等长 mask + scan + 安全 fix
-│   ├── cli.py           # 命令行
+│   ├── rules.py         # 规则数据声明（ID/pattern/block/review_hint）
+│   ├── scanner.py       # 扫描引擎（mask 后规则分发 + 语言守卫）
+│   ├── markdown.py      # Markdown 保护层（行角色分类 + 等长 mask）
+│   ├── cli.py           # 路由 + review 步骤编排
 │   └── __init__.py      # 版本
-├── tests/               # pytest 回归（22 tests）
+├── tests/               # pytest 回归（17 tests）
 ├── pyproject.toml       # packaging（wenlint 命令）
 ├── LICENSE              # MIT
 └── README.md

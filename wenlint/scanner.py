@@ -9,6 +9,8 @@ from .markdown import line_role, mask_text
 from .profiles import PROFILES
 from .rules import RULES, by_id
 
+# scan_text 是规则分发核心，分支/局部变量是本质复杂度
+# pylint: disable=too-many-locals,too-many-branches,too-many-statements
 DEFAULT_PROFILE = "general"
 
 
@@ -158,5 +160,40 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
                     })
 
     findings += findings_900
+
+    # 补充规则审查提示（review_hint）与命中句（sentence，供 Skill 消费）
+    for f in findings:
+        rule = by_id(f["rule_id"])
+        f["review_hint"] = rule.get("review_hint", "") if rule else ""
+        ln = f["line"]
+        if 1 <= ln <= len(raw_lines):
+            f["sentence"] = _extract_sentence(raw_lines[ln - 1], f["col"])
+        else:
+            f["sentence"] = ""
+
     findings.sort(key=lambda f: (f["line"], f["col"]))
     return findings
+
+
+def _extract_sentence(line, col):
+    """从命中行提取包含该位置的句子片段（按句读切分）。
+
+    Args:
+        line: 命中所在行原文。
+        col: 命中列（1-based）。
+
+    Returns:
+        str：包含命中位置的句段；无句读时返回整行。列号越界时返回整行。
+    """
+    if not line:
+        return ""
+    idx = max(0, col - 1)
+    if idx >= len(line):
+        return line
+    segs = re.split(r"(?<=[。！？!?；;])", line)
+    pos = 0
+    for seg in segs:
+        if pos <= idx < pos + len(seg):
+            return seg.strip()
+        pos += len(seg)
+    return line

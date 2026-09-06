@@ -1,16 +1,17 @@
 """WenLint CLI：像 ESLint 一样检查中文 PRD/论文/报告/Markdown。
 
 架构（分层职责）：
-    main()          极轻路由：解析参数 → 分发 fix/review 两个入口
+    main()          极轻路由：解析参数 → review
     _run_review()   业务步骤编排（高层）：加载 → 扫描 → 输出，不含实现细节
-    _run_fix()      业务步骤编排（高层）：加载 → 修复 → 差异 → 剩余扫描
     _load/_scan/_emit 等：具体实现层（每个函数只做一件事，抽象层次一致）
+
+核心原则（v0.1 定案）：
+    WenLint 只负责"发现"——定位 + 规则 ID + 命中文本 + 上下文 + review_hint。
+    **不修改任何正文**（无 --fix/--apply）。判断/查证/改写由 Skill 的 LLM 完成。
 
 用法：
     wenlint <path>                     review
-    wenlint <path> --fix               修复预览（不写盘）
-    wenlint <path> --fix --apply       修复并写盘（先备份 .bak）
-    wenlint <path> --json              JSON 输出
+    wenlint <path> --json              JSON 输出（含 sentence/before/after/review_hint）
     wenlint <path> --profile academic  场景 profile
     wenlint <path> --fail-level warning  存在 >= 该级别时 exit 1（CI）
 """
@@ -20,7 +21,6 @@ import os
 import sys
 
 from . import __version__
-from .fixer import fix_text
 from .profiles import PROFILES
 from .scanner import scan_text
 
@@ -31,7 +31,7 @@ DOC_EXTS = (".md", ".txt", ".rst", ".markdown")
 # ============ 路由层 ============
 
 def main(argv=None):
-    """CLI 入口：极轻路由，只做参数解析与 fix/review 分发。
+    """CLI 入口：极轻路由，只做参数解析与 review 分发。
 
     Args:
         argv: 命令行参数列表；None 时用 sys.argv[1:]。
@@ -44,8 +44,6 @@ def main(argv=None):
     if not files:
         print(f"!! 未找到可检查文件: {args.path}", file=sys.stderr)
         return 2
-    if args.fix:
-        return _run_fix(files, args)
     return _run_review(files, args)
 
 
@@ -58,18 +56,16 @@ def _parse_args(argv):
         argv: 原始参数列表。
 
     Returns:
-        argparse.Namespace：含 path/fix/apply/json/profile/fail-level 等。
+        argparse.Namespace：含 path/json/profile/fail-level/quiet 等。
     """
     p = argparse.ArgumentParser(
         prog="wenlint",
-        description="WenLint：中文写作静态检查器（规则 ID + profile + 安全 fix）",
+        description="WenLint：中文写作静态检查器（发现候选，不修改正文）",
     )
     p.add_argument("path", nargs="+", help="文件或目录（可多个）")
     p.add_argument("--version", action="version", version=f"wenlint {__version__}")
-    p.add_argument("--json", action="store_true", help="JSON 输出")
-    p.add_argument("--fix", action="store_true", help="修复模式：自动删除套话，显示 diff")
-    p.add_argument("--apply", action="store_true",
-                   help="与 --fix 连用：写回文件（先备份 .bak）")
+    p.add_argument("--json", action="store_true",
+                   help="JSON 输出（含上下文句与审查提示，供 LLM/Skill 消费）")
     p.add_argument("--profile", choices=sorted(PROFILES), default="general",
                    help="场景 profile：academic/product/formal/general")
     p.add_argument("--fail-level", choices=["error", "warning", "suggestion"],
@@ -138,6 +134,14 @@ def _load_texts(files):
 
 
 def _display_path(fp):
+    """文件路径的展示形式（绝对路径转相对路径）。
+
+    Args:
+        fp: 文件绝对路径。
+
+    Returns:
+        str：相对 cwd 的路径；非绝对路径原样返回。
+    """
     return os.path.relpath(fp) if os.path.isabs(fp) else fp
 
 
@@ -187,7 +191,7 @@ def _scan_all(texts, profile):
 
 
 def _emit_json(results, texts):
-    """输出 JSON（每条命中附带上下文行，供 LLM 语义层消费）。
+    """输出 JSON（供 Skill/LLM 消费的结构化候选）。
 
     Args:
         results: [(fp, findings), ...]。
@@ -198,12 +202,21 @@ def _emit_json(results, texts):
         lines = texts[fp].split("\n")
         for f in findings:
             ln = f["line"]
-            ctx = {
+            out.append({
+                "rule": f["rule_id"],
+                "type": "candidate" if f["severity"] == "candidate" else "lint",
+                "severity": f["severity"],
+                "category": f["category"],
+                "message": f["message"],
+                "review_hint": f["review_hint"],
+                "file": fp,
+                "line": ln,
+                "column": f["col"],
+                "text": f["match"],
+                "sentence": f["sentence"],
                 "before": lines[ln - 2] if ln >= 2 else None,
-                "line": lines[ln - 1] if 1 <= ln <= len(lines) else None,
                 "after": lines[ln] if ln < len(lines) else None,
-            }
-            out.append({"file": fp, **f, "context": ctx})
+            })
     print(json.dumps(out, ensure_ascii=False, indent=2))
 
 
@@ -219,6 +232,15 @@ def _emit_summary(results):
 
 
 def _format_finding(fp, f):
+    """单条命中的文本行（vale 风格：文件:行:列  ID  级别  类别  消息）。
+
+    Args:
+        fp: 文件路径。
+        f: finding dict。
+
+    Returns:
+        str：格式化后的命中行。
+    """
     msg = f["message"]
     if f["match"]:
         msg = f"{msg} 「{f['match']}」" if "「" not in msg else msg
@@ -240,110 +262,6 @@ def _exit_code(findings, fail_level):
         return 0
     worst = max((LEVEL_RANK[f["severity"]] for f in findings), default=0)
     return 1 if worst >= LEVEL_RANK[fail_level] else 0
-
-
-# ============ fix 入口（业务步骤编排）============
-
-def _run_fix(files, args):
-    """Fix 业务步骤编排：加载 → 修复 → 备份写回 → diff → 剩余扫描。
-
-    Args:
-        files: 待修复文件列表。
-        args: 解析后的命令行参数。
-
-    Returns:
-        int：退出码。
-    """
-    texts = _load_texts(files)
-    fixed_map, diffs = _fix_all(texts, args.profile)
-    if args.apply:
-        _write_back(files, texts, fixed_map)
-    _print_fix_diff(diffs)
-    remaining = _scan_remaining(fixed_map, args.profile)
-    _print_remaining(remaining, args.quiet)
-    return _exit_code([f for _, fs in remaining for f in fs], args.fail_level)
-
-
-def _fix_all(texts, profile):
-    """批量执行安全修复。
-
-    Args:
-        texts: {fp: text} 映射。
-        profile: 请求的 profile。
-
-    Returns:
-        (fixed_map, diffs)：{fp: 修复后文本} 与
-        [(fp, raw, fixed, changes)]（仅有变更的文件）。
-    """
-    fixed_map, diffs = {}, []
-    for fp, raw in texts.items():
-        fixed, changes = fix_text(raw, profile=_effective_profile(fp, profile))
-        fixed_map[fp] = fixed
-        if changes:
-            diffs.append((fp, raw, fixed, changes))
-    return fixed_map, diffs
-
-
-def _write_back(files, texts, fixed_map):
-    """备份原文件并写回修复文本（Markdown-safe 修复的落盘环节）。
-
-    Args:
-        files: 文件列表。
-        texts: 原始文本 {fp: text}（写入 .bak）。
-        fixed_map: 修复后文本 {fp: text}（写回原文件）。
-    """
-    for fp in files:
-        if fp not in fixed_map:
-            continue
-        with open(fp + ".bak", "w", encoding="utf-8") as bf:
-            bf.write(texts[fp])
-        with open(fp, "w", encoding="utf-8") as wf:
-            wf.write(fixed_map[fp])
-        print(f"  ✍️ 已写回 {_display_path(fp)}（备份 .bak）")
-
-
-def _print_fix_diff(diffs):
-    """打印每个文件的修复 diff（- 原文行 / + 修复行）。
-
-    Args:
-        diffs: [(fp, raw, fixed, changes)]。
-    """
-    for fp, raw, fixed, changes in diffs:
-        raw_lines, fixed_lines = raw.split("\n"), fixed.split("\n")
-        print(f"--- {_display_path(fp)}: {len(changes)} 处自动修复 ---")
-        for line_no, rid, note in changes:
-            print(f"  L{line_no} [{rid}] {note}")
-            print(f"    - {raw_lines[line_no - 1].strip()}")
-            print(f"    + {fixed_lines[line_no - 1].strip()}")
-
-
-def _scan_remaining(fixed_map, profile):
-    """扫描修复后文本，输出仍需人工判断的剩余命中。
-
-    修复对象是内存中的 fixed 文本而非磁盘文件——保证 --fix（不写盘）
-    预览时剩余列表反映真实修复结果。
-
-    Args:
-        fixed_map: {fp: 修复后文本}。
-        profile: 请求的 profile。
-
-    Returns:
-        list[tuple[str, list]]：[(fp, remaining_findings), ...]。
-    """
-    return [(fp, scan_text(fixed, profile=_effective_profile(fp, profile),
-                           filename=fp))
-            for fp, fixed in fixed_map.items()]
-
-
-def _print_remaining(remaining, quiet):
-    print("\n=== 修复后剩余（需人工判断）===")
-    if not remaining:
-        print("✅ 全部干净")
-        return
-    for fp, fs in remaining:
-        for f in fs:
-            if not quiet:
-                print(_format_finding(fp, f))
 
 
 if __name__ == "__main__":

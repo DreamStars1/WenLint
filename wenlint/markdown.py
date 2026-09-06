@@ -6,6 +6,8 @@
 
 import re
 
+# line_role 守卫式分类多 return 是合理风格
+# pylint: disable=too-many-return-statements
 # ---------- 保护区间 ----------
 _FENCE_RE = re.compile(r"^(```|~~~)")
 
