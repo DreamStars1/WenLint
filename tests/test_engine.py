@@ -82,3 +82,21 @@ def test_leftright_block_space_sense():
     hits = [h for h in f(text) if h[2] == "H003"]
     # "左右边"被 block；"3 米左右"的左右该报
     assert len(hits) == 1
+
+
+def test_s001_scope_paragraph_only():
+    """vale 借鉴：S001 只判散文段落，列表/导航行豁免"""
+    text = ("- `ref/x.md` — 这是很长的导航行超过八十个字符阈值但它是列表结构不是句子不该被当成超长句处理\n\n"
+            "这是普通散文段落它的长度需要超过八十个字符的文档阈值才会被判定为超长句，这一句写得很长就是为了让测试文本真的超过八十个字符从而触发超长句提示并验证列表导航行不会被误判成句子\n")
+    s001 = [h for h in scan_text(text) if h["rule_id"] == "S001"]
+    assert len(s001) == 1 and s001[0]["line"] == 3, f"应只报段落行, got {s001}"
+
+
+def test_s001_bold_markers_not_counted():
+    """** 粗体标记不计入句长"""
+    # 文本 48 字 + 4 个 ** 标记 = 52 raw 字符；剥标记后 < 50 不报（instruction）
+    body = "这段内容共四十八个字，加上加粗符号也不该因为标记字符而被判定超长，所以这条应该保持干净"
+    text = f"**{body}**\n"
+    from wenlint.profiles import PROFILES
+    hits = scan_text(text, profile="instruction", filename="SKILL.md")
+    assert not [h for h in hits if h["rule_id"] == "S001"], "粗体标记不应计入句长"

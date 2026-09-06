@@ -17,6 +17,28 @@ DEFAULT_PROFILE = "general"
 _FENCE_RE = re.compile(r"^(```|~~~)")
 
 
+def line_role(line):
+    """行角色分类（vale scope 的轻量版）：判断一行是散文段落还是结构行。
+    返回 paragraph / heading / list_item / blockquote / table / fence / other"""
+    s = line.strip()
+    if not s:
+        return "blank"
+    if s.startswith(("```", "~~~")):
+        return "fence"
+    if s.startswith("#"):
+        return "heading"
+    if s.startswith(">"):
+        return "blockquote"
+    if s.startswith("|"):
+        return "table"
+    if re.match(r"^[-*+]\s", s) or re.match(r"^\d+[.、)]\s", s):
+        return "list_item"
+    # 缩进 4 空格（代码块）
+    if line.startswith("    ") or line.startswith("\t"):
+        return "fence"
+    return "paragraph"
+
+
 def _blank(s):
     return " " * len(s)
 
@@ -143,13 +165,15 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
             severity = "candidate"   # 语义候选：不阻断 CI，交 LLM/人工裁决
         rpats, rblock = _COMPILED[rid]
 
-        if rid == "S001":   # 超长句：逐行按句读拆，跳过表格行/低中文占比行
-            max_len = params.get("S001", {}).get("max_len", rule.get("max_len", 60))
-            for ln, mline in enumerate(masked, 1):
-                stripped = mline.strip()
-                if not stripped or stripped.startswith("|") or stripped.startswith("#"):
+        if rid == "S001":   # 超长句：scope=paragraph（vale 借鉴）——只判散文段落行，
+            # 列表项/导航/标题/表格是结构不是句子；同时剥掉 ** 等标记符号再计数
+            max_len = params.get("S001", {}).get("max_len", rule.get("max_len", 80))
+            for ln, (mline, raw) in enumerate(zip(masked, raw_lines), 1):
+                if line_role(raw) != "paragraph":
                     continue
-                for seg in re.split(r"(?<=[。！？!?；;])", stripped):
+                # 剥粗体/强调标记（**、__、*、_）后计数——标记不是句子内容
+                clean = re.sub(r"\*\*|__|\*|_|`", "", mline.strip())
+                for seg in re.split(r"(?<=[。！？!?；;])", clean):
                     seg = seg.strip()
                     # 语言守卫：中文字符占比 <30% 的行（英文/代码/URL 行）不判长句
                     if len(seg) > max_len and _cn_ratio(seg) >= 0.30:

@@ -45,7 +45,8 @@ def format_line(fp, f):
     msg = f["message"]
     if f["match"]:
         msg = f"{msg} 「{f['match']}」" if "「" not in msg else msg
-    return (f"{fp}:{f['line']}:{f['col']}  "
+    disp = os.path.relpath(fp) if os.path.isabs(fp) else fp
+    return (f"{disp}:{f['line']}:{f['col']}  "
             f"{f['rule_id']:<5} {f['severity']:<10} {f['category']}  {msg}")
 
 
@@ -139,7 +140,8 @@ def main(argv=None):
             print(f"!! 无法读取 {fp}: {e}", file=sys.stderr)
             continue
         file_texts[fp] = text.split("\n")
-        findings = scan_text(text, profile=_effective_profile(fp, args.profile), filename=fp)
+        findings = scan_text(text, profile=_effective_profile(fp, args.profile),
+                             filename=fp)
         total += len(findings)
         results.append((fp, findings))
 
@@ -165,7 +167,7 @@ def main(argv=None):
         if total == 0:
             print("✅ 未发现坏味")
         else:
-            per = "  ".join(f"{os.path.basename(fp)}: {len(h)}"
+            per = "  ".join(f"{os.path.relpath(fp) if os.path.isabs(fp) else fp}: {len(h)}"
                             for fp, h in results if h)
             print(f"\n✖ {total} 处（{per}）")
 
