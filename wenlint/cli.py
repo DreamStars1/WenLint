@@ -26,6 +26,9 @@ from .scanner import scan_text
 
 LEVEL_RANK = {"error": 3, "warning": 2, "suggestion": 1, "candidate": 0}
 DOC_EXTS = (".md", ".txt", ".rst", ".markdown")
+# 目录扫描时跳过的非源码目录
+SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "build", "dist",
+             "__pycache__", ".pytest_cache", ".archive", "templates"}
 
 
 # ============ 路由层 ============
@@ -94,6 +97,24 @@ def _effective_profile(fp, requested):
     return requested
 
 
+def _load_ignore(cwd):
+    """读取 cwd/.wenlintignore（每行一个 glob 模式，# 开头为注释）。
+
+    Args:
+        cwd: 运行目录。
+
+    Returns:
+        list[str]：忽略模式列表（无文件则空）。
+    """
+    p = os.path.join(cwd, ".wenlintignore")
+    try:
+        with open(p, encoding="utf-8") as f:
+            return [ln.strip() for ln in f
+                    if ln.strip() and not ln.startswith("#")]
+    except OSError:
+        return []
+
+
 def _collect_files(paths):
     """收集待检查文件（多路径输入展开）。
 
@@ -106,8 +127,7 @@ def _collect_files(paths):
     Returns:
         list[str]：排序去重后的文件路径（.md/.txt/.rst/.markdown）。
     """
-    SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "build", "dist",
-                 "__pycache__", ".pytest_cache", ".archive", "templates"}
+    ignore = _load_ignore(os.getcwd())
     files = []
     for p in paths:
         if os.path.isfile(p):
@@ -116,9 +136,31 @@ def _collect_files(paths):
             for root, dirs, fs in os.walk(p):
                 dirs[:] = [d for d in dirs if d not in SKIP_DIRS
                            and not d.startswith(".")]
-                files += [os.path.join(root, f) for f in fs
-                          if f.endswith(DOC_EXTS)]
+                for f in fs:
+                    if not f.endswith(DOC_EXTS):
+                        continue
+                    fp = os.path.join(root, f)
+                    if ignore and _ignored(fp, ignore):
+                        continue
+                    files.append(fp)
     return sorted(set(files))
+
+
+def _ignored(fp, patterns):
+    """判断文件是否匹配任一忽略模式（相对路径或 basename 匹配）。
+
+    Args:
+        fp: 文件路径。
+        patterns: .wenlintignore 模式列表。
+
+    Returns:
+        bool：True 表示应忽略。
+    """
+    import fnmatch
+    rel = os.path.relpath(fp)
+    return any(fnmatch.fnmatch(rel, pat)
+               or fnmatch.fnmatch(os.path.basename(fp), pat)
+               for pat in patterns)
 
 
 def _load_texts(files):

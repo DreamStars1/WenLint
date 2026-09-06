@@ -171,3 +171,59 @@ def test_english_text_with_chinese_segment():
             "technical terms. 总而言之，这里有中文套话。\n")
     hits = f(text)
     assert any(h[2] == "C001" for h in hits), "英文文件中的中文段应被检查"
+
+
+# ===== 二轮审查 P0 回归 =====
+
+def test_mask_equal_length_invariant():
+    """核心不变量：mask 与原文严格等长、等行数（各种组合输入）"""
+    cases = [
+        "正文 <!-- 注释 --> 总而言之，非常重要。\n",
+        "前文<!--\n注释\n-->后文总而言之，非常重要。\n",
+        "[文字](url) <!--a--> `code` **b** |表|\n",
+        "多行\n<!--\n注1\n注2\n-->\n尾行\n```\n代码\n```\n完。\n",
+        "---\ntitle: x\n---\n正文（括号）\"引号\"。\n",
+    ]
+    from wenlint.markdown import mask_text
+    for c in cases:
+        m = mask_text(c)
+        assert len(m) == len(c), f"长度不等: {len(m)} vs {len(c)} for {c[:20]!r}"
+        assert m.count("\n") == c.count("\n"), f"行数不等: {c[:20]!r}"
+
+
+def test_inline_comment_keeps_trailing_text():
+    """单行注释后正文保留且可查（等长 mask 不丢内容）"""
+    text = "正文 <!-- 注释 --> 总而言之，非常重要。\n"
+    hits = f(text)
+    assert any(h[2] == "C001" for h in hits), "注释后的套话应被检查"
+
+
+def test_multiline_comment_keeps_trailing_text():
+    """多行注释关闭行后的正文保留且可查"""
+    text = "前文<!--\n注释\n-->后文总而言之，非常重要。\n"
+    hits = f(text)
+    assert any(h[2] == "C001" for h in hits), "多行注释后的套话应被检查"
+
+
+def test_block_anchored_to_hit():
+    """block 只豁免当前命中（定语），不豁免邻接的真命中"""
+    text = "总而言之的说法，总而言之，应该修改。\n"
+    hits = [h for h in f(text) if h[2] == "C001"]
+    assert len(hits) == 1, f"第二处应报、第一处豁免，实际 {len(hits)}"
+
+
+def test_cliche_before_he_not_exempt():
+    """C001 词后接'和'不豁免（'值得注意的是和用户沟通'应报）"""
+    text = "值得注意的是和用户沟通非常重要。\n"
+    hits = [h for h in f(text) if h[2] == "C001"]
+    assert len(hits) == 1, "词后接'和'不应豁免"
+
+
+def test_two_long_sentences_both_reported():
+    """同段落两条超长句各自定位（不被 (line,col) 去重吞掉）"""
+    s1 = "第一句超长测试文本用于验证超长句规则需要超过八十字符阈值才会被判定补充这些文字之后长度应当足以越过八十个字符的判定门槛触发超长句提示了再补一点文字再补一点文字再补一点文字再补一点文字"
+    s2 = "第二句超长测试文本同样用于验证同段两条超长句都能被独立报告不被去重逻辑吞掉于是继续追加内容直到满足最低长度判定的要求为止再补一点文字再补一点文字再补一点文字再补一点文字再补一点文字"
+    text = f"{s1}。{s2}。\n"
+    hits = [h for h in f(text) if h[2] == "S001"]
+    assert len(hits) == 2, f"两条超长句都应报，实际 {len(hits)}"
+    assert hits[0][1] != hits[1][1], "两条应定位在不同位置"

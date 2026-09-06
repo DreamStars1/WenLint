@@ -1,0 +1,2 @@
+# wenlint 项目自检忽略：测试 fixture 含故意坏味样例
+tests/

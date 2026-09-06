@@ -9,7 +9,7 @@
 
 ```
 README.md:18:7   C001  warning     套话/废话填充  「总而言之」
-paper.md:42:16   H002  suggestion  模糊词         「大概」
+paper.md:42:16   H001  warning     模糊词         「大概」
 prd.md:76:1      S001  suggestion  超长句         94 chars
 ```
 
@@ -59,8 +59,8 @@ wenlint 文档.md --json              # 结构化输出（供 Skill/LLM 消费�
   "severity": "suggestion",
   "patterns": [r"进行(?=(分析|讨论|研究|说明))"],   # 语境正则
   "block": None,                   # 例外（如"由此可见一斑"）
-  "fixable": False,                # 只有高置信规则才自动修
   "message": "…",
+  "review_hint": "给 LLM 的判断方向（查证/保留条件/改写建议）",
 }
 ```
 
@@ -147,7 +147,7 @@ wenlint/
 │   ├── markdown.py      # Markdown 保护层（行角色分类 + 等长 mask）
 │   ├── cli.py           # 路由 + review 步骤编排
 │   └── __init__.py      # 版本
-├── tests/               # pytest 回归（17 tests）
+├── tests/               # pytest 回归（32 tests）
 ├── pyproject.toml       # packaging（wenlint 命令）
 ├── LICENSE              # MIT
 └── README.md

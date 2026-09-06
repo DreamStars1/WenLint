@@ -10,7 +10,7 @@ from .profiles import PROFILES
 from .rules import RULES, by_id
 
 # scan_text 是规则分发核心，分支/局部变量是本质复杂度
-# pylint: disable=too-many-locals,too-many-branches,too-many-statements
+# pylint: disable=too-many-locals,too-many-branches,too-many-statements,too-many-nested-blocks
 DEFAULT_PROFILE = "general"
 
 
@@ -110,20 +110,23 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
         rpats, rblock = _COMPILED[rid]
 
         if rid == "S001":   # 超长句：聚合连续散文段落后按句读判长
-            # （vale scope 借鉴；剥 ** 等标记；修复 markdown 手动换行漏报）
+            # （vale scope 借鉴；剥 ** 等标记；跨行精确定位，不吞同段多命中）
             max_len = params.get("S001", {}).get("max_len", rule.get("max_len", 80))
-            paras = _collect_paragraphs(masked, raw_lines)
-            for start_ln, para in paras:
-                clean = re.sub(r"\*\*|__|\*|_|`", "", para)
-                for seg in re.split(r"(?<=[。！？!?；;])", clean):
-                    seg = seg.strip()
-                    if len(seg) > max_len and _cn_ratio(seg) >= 0.30:
+            for _, para, bounds in _collect_paragraphs(masked, raw_lines):
+                cursor = 0
+                for seg in re.split(r"(?<=[。！？!?；;])", para):
+                    lead = len(seg) - len(seg.lstrip())   # 句前空白
+                    seg_stripped = seg.strip()
+                    clean = re.sub(r"\*\*|__|\*|_|`", "", seg_stripped)
+                    if len(clean) > max_len and _cn_ratio(clean) >= 0.30:
+                        ln, col = _locate(bounds, cursor + lead)
                         findings.append({
-                            "line": start_ln, "col": 1, "rule_id": rid,
+                            "line": ln, "col": col, "rule_id": rid,
                             "severity": severity, "category": rule["category"],
                             "match": "", "message": rule["message"].format(
-                                len=len(seg), max=max_len),
+                                len=len(clean), max=max_len),
                         })
+                    cursor += len(seg)
             continue
 
         if rid == "D001":   # 相邻重复（中文 2-8 字连续重复）
@@ -151,7 +154,9 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
                     matched = m.group(0)
                     if not matched.strip():
                         continue
-                    if rblock and rblock.search(raw[max(0, m.start() - 10): m.end() + 10]):
+                    if rblock and rblock.match(raw, m.start()):
+                        # block 锚定当前命中起点（词后例外模式），
+                        # 不能搜索附近任意位置（会误豁免邻接的真命中）
                         continue
                     findings.append({
                         "line": ln, "col": m.start() + 1, "rule_id": rid,
@@ -188,32 +193,55 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
 
 
 def _collect_paragraphs(masked_lines, raw_lines):
-    """聚合连续散文段落行为段落（修复 markdown 手动换行的跨行长句漏报）。
+    """聚合连续散文段落行为段落，附带字符偏移 → 原文位置的行界映射。
 
     Markdown 中一个段落可被手动换行拆成多行；若逐行判句长，
-    拆行后每段都 < 阈值就会漏报。这里把连续 paragraph 行拼接后统一切句。
+    拆行后每段都 < 阈值就会漏报。这里把连续 paragraph 行拼接后统一切句，
+    并记录每个字符偏移对应的 (line, col)，供超长句精确定位（不吞多命中）。
 
     Args:
         masked_lines: mask 后各行。
         raw_lines: 原文各行（用于 line_role 判定）。
 
     Returns:
-        list[tuple[int, str]]：[(段落起始行号 1-based, 拼接后的段落文本)]。
+        list[tuple[int, str, list]]：[(段落起始行号, 拼接文本, 行界)]。
+        行界 = [(累计字符数, 行号), ...]，每行拼接后追加一条；
+        给定字符偏移 pos，落在 [prev_cum, cum) 的即为该行，
+        行内列号 = pos - prev_cum + 1。
     """
     paras = []
-    start_ln, buf = 0, ""
+    start_ln, buf, bounds = 0, "", []
     for ln, (mline, raw) in enumerate(zip(masked_lines, raw_lines), 1):
         if line_role(raw) == "paragraph" and mline.strip():
             if not buf:
                 start_ln = ln
             buf += mline.strip()
+            bounds.append((len(buf), ln))
         else:
             if buf:
-                paras.append((start_ln, buf))
-                start_ln, buf = 0, ""
+                paras.append((start_ln, buf, bounds))
+            start_ln, buf, bounds = 0, "", []
     if buf:
-        paras.append((start_ln, buf))
+        paras.append((start_ln, buf, bounds))
     return paras
+
+
+def _locate(bounds, pos):
+    """把段落内字符偏移映射回 (line, col)。
+
+    Args:
+        bounds: _collect_paragraphs 返回的行界。
+        pos: 段内字符偏移（0-based）。
+
+    Returns:
+        (line, col)：1-based 行号与列号。
+    """
+    prev_cum, prev_ln = 0, bounds[0][1]
+    for cum, ln in bounds:
+        if pos < cum:
+            return ln, pos - prev_cum + 1
+        prev_cum, prev_ln = cum, ln
+    return prev_ln, pos - prev_cum + 1
 
 
 def _extract_sentence(line, col):

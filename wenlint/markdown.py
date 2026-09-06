@@ -10,7 +10,7 @@
 
 import re
 
-# pylint: disable=too-many-return-statements
+# pylint: disable=too-many-return-statements,too-many-branches,too-many-statements
 # line_role 守卫式分类，多 return 是合理风格
 
 
@@ -106,20 +106,27 @@ def mask_text(text):
     for i, line in enumerate(lines):
         s = line.strip()
 
-        # 多行 HTML 注释
+        # 多行 HTML 注释（区间 mask：等长，不丢注释前后正文）
         if in_comment:
-            out.append(_blank(line))
             if "-->" in line:
+                end = line.find("-->") + 3
+                out.append(_blank(line[:end]) + mask_line(line[end:]))
                 in_comment = False
-            continue
-        if "<!--" in line and "-->" in line:       # 单行注释
-            pre = line[: line.find("<!--")]
-            end = line.find("-->") + 3
-            out.append(mask_line(pre) + _blank(line[line.find("<!--"):end]))
+            else:
+                out.append(_blank(line))
             continue
         if "<!--" in line:
-            out.append(mask_line(line[: line.find("<!--")]))
-            in_comment = True
+            s_begin = line.find("<!--")
+            if "-->" in line:
+                e_end = line.find("-->") + 3
+                # 单行注释：注释前正文 mask + 注释段 blank + 注释后正文 mask
+                out.append(mask_line(line[:s_begin]) +
+                           _blank(line[s_begin:e_end]) +
+                           mask_line(line[e_end:]))
+            else:
+                # 多行注释开始行：<!-- 前正文 mask，注释段 blank 到行尾
+                out.append(mask_line(line[:s_begin]) + _blank(line[s_begin:]))
+                in_comment = True
             continue
 
         # 代码围栏
