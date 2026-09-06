@@ -5,3 +5,9 @@ __pycache__/
 
 .worktrees/
 
+
+*.egg-info/
+dist-test/
+.venv-dist-test/
+.pytest-*/
+

@@ -143,6 +143,24 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args[1:3] == ["docs", "+fetch"]:
+        state_path = os.environ.get("FAKE_LARK_STATE")
+        if state_path and Path(state_path).is_file():
+            state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+            payload = {
+                "ok": True,
+                "data": {
+                    "document": {
+                        "document_id": state.get("document_id", "DocToken"),
+                        "revision_id": state["revision_id"],
+                        "url": state.get(
+                            "url", "https://acme.feishu.cn/docx/DocToken"
+                        ),
+                    },
+                    "content": state["content"],
+                },
+            }
+            sys.stdout.write(json.dumps(payload))
+            return 0
         payload = json.loads(
             (FIXTURES / "fetch_success.json").read_text(encoding="utf-8")
         )
@@ -150,6 +168,95 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args[1:3] == ["docs", "+update"]:
+        state_path = os.environ.get("FAKE_LARK_STATE")
+        if state_path and Path(state_path).is_file():
+            state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+            # Parse argv for block id, content, and revision.
+            try:
+                block_id = args[args.index("--block-id") + 1]
+                content = args[args.index("--content") + 1]
+                revision = int(args[args.index("--revision-id") + 1])
+            except (ValueError, IndexError):
+                sys.stdout.write(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": {"type": "protocol_error", "message": "bad argv"},
+                        }
+                    )
+                )
+                return 0
+            if revision != state["revision_id"]:
+                sys.stdout.write(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": {
+                                "type": "revision_conflict",
+                                "message": "revision conflict",
+                            },
+                        }
+                    )
+                )
+                return 0
+            xml = state["content"]
+            # Naive block replace by block-id attribute.
+            import re
+
+            pattern = re.compile(
+                rf'(<(?:p|h[1-9]|li|blockquote)\b[^>]*block-id="{re.escape(block_id)}"[^>]*>.*?</(?:p|h[1-9]|li|blockquote)>)',
+                re.DOTALL,
+            )
+            if not pattern.search(xml):
+                # Fall back to replacing a self-contained content argument as the
+                # sole matching block serialization used by tests.
+                marker = f'block-id="{block_id}"'
+                if marker not in xml:
+                    sys.stdout.write(
+                        json.dumps(
+                            {
+                                "ok": False,
+                                "error": {
+                                    "type": "block_missing",
+                                    "message": "block not found",
+                                },
+                            }
+                        )
+                    )
+                    return 0
+            updated = pattern.sub(content, xml, count=1)
+            if updated == xml and f'block-id="{block_id}"' in xml:
+                # ElementTree serialization may differ; splice by marker window.
+                start = xml.index(f'block-id="{block_id}"')
+                # Find element start before attribute.
+                lt = xml.rfind("<", 0, start)
+                # Find matching close tag roughly by next sibling start after end tag.
+                # Prefer exact content replacement when the original element string
+                # can be recovered from a prior fetch snapshot stored in state.
+                originals = state.get("block_xml", {})
+                original = originals.get(block_id)
+                if original and original in xml:
+                    updated = xml.replace(original, content, 1)
+                else:
+                    updated = xml[:lt] + content + xml[xml.find(">", start) + 1 :]
+                    # This fallback is intentionally imperfect; stateful tests
+                    # should supply block_xml snapshots.
+            state["content"] = updated
+            state["revision_id"] = revision + 1
+            Path(state_path).write_text(json.dumps(state), encoding="utf-8")
+            sys.stdout.write(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "data": {
+                            "result": "success",
+                            "revision_id": state["revision_id"],
+                            "warnings": [],
+                        },
+                    }
+                )
+            )
+            return 0
         payload = json.loads(
             (FIXTURES / "update_success.json").read_text(encoding="utf-8")
         )

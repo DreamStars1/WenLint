@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Mapping, Sequence
@@ -101,6 +102,14 @@ class LarkClient:
             self._argv_prefix: list[str] = [executable]
         else:
             self._argv_prefix = list(executable)
+        # Allow tests and operators to override the executable without rewriting
+        # argv construction for every call site.
+        override = os.environ.get("WENLINT_LARK_CLI")
+        if override and self._argv_prefix == ["lark-cli"]:
+            if override.endswith(".py"):
+                self._argv_prefix = [sys.executable, override]
+            else:
+                self._argv_prefix = [override]
         self.fetch_timeout = fetch_timeout
         self.update_timeout = update_timeout
 
@@ -499,6 +508,8 @@ def _sanitized_env() -> dict[str, str]:
         "FAKE_LARK_RECORD",
         "FAKE_LARK_VERSION",
         "FAKE_LARK_SLEEP",
+        "FAKE_LARK_STATE",
+        "WENLINT_LARK_CLI",
     }
     env = {key: value for key, value in os.environ.items() if key in allowed}
     # Ensure the Python interpreter can start the fake CLI under Windows.
