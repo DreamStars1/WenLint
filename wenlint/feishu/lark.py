@@ -226,7 +226,8 @@ class LarkClient:
             ref: Resolved document reference with canonical Docx identity.
             block_id: Latest block id from the current snapshot.
             xml: Complete patched block XML (never logged by this adapter).
-            revision_id: Explicit positive revision; ``-1`` is rejected.
+            revision_id: Explicit positive revision; ``revision_id <= 0`` is
+                rejected before spawning.
 
         Returns:
             Parsed JSON object whose update ``result`` is ``success``.
@@ -241,10 +242,10 @@ class LarkClient:
                 "block replace requires a resolved Docx document reference",
                 retryable=False,
             )
-        if revision_id < 0:
+        if revision_id <= 0:
             raise LarkCliError(
                 "invalid_revision",
-                "explicit revision_id is required; revision_id=-1 is forbidden",
+                "explicit positive revision_id is required; revision_id<=0 is forbidden",
                 retryable=False,
             )
         doc = ref.canonical_url
@@ -331,14 +332,16 @@ class LarkClient:
         Args:
             args: Arguments after the executable prefix.
             timeout: Hard wall-clock timeout in seconds.
-            expect_json: When true, parse stdout as a JSON object.
+            expect_json: When true, parse stdout as a JSON object; on nonzero
+                exit, also attempt bounded JSON recovery from stdout then
+                stderr before falling back to ``nonzero_exit``.
 
         Returns:
             Parsed JSON object or decoded stdout text.
 
         Raises:
             LarkCliError: On missing executable, timeout, output limits,
-                nonzero exits, or invalid JSON.
+                nonzero exits, normalized CLI error envelopes, or invalid JSON.
         """
         argv = [*self._argv_prefix, *args]
         executable = self._argv_prefix[0]
@@ -450,6 +453,13 @@ class LarkClient:
             ) from exc
 
         if proc.returncode != 0:
+            if expect_json:
+                for text in (stdout_text, stderr_text):
+                    parsed_error = _parse_bounded_json_object(text)
+                    if parsed_error is not None and _is_ok_false_error_object(
+                        parsed_error
+                    ):
+                        self._require_ok(parsed_error)
             raise LarkCliError(
                 "nonzero_exit",
                 "lark-cli exited with a nonzero status",
@@ -493,6 +503,42 @@ def _terminate(proc: subprocess.Popen[bytes]) -> None:
         proc.wait(timeout=_TERMINATE_GRACE_SECONDS)
 
 
+def _parse_bounded_json_object(text: str) -> dict[str, object] | None:
+    """Parse a JSON object from already-bounded pipe text.
+
+    Args:
+        text: UTF-8 decoded stdout or stderr content within size limits.
+
+    Returns:
+        A JSON object mapping, or ``None`` when the text is not a JSON object.
+    """
+    stripped = text.strip()
+    if not stripped.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
+
+
+def _is_ok_false_error_object(payload: Mapping[str, object]) -> bool:
+    """Return whether payload is an ``ok=false`` / ``error`` envelope.
+
+    Args:
+        payload: Candidate JSON object from a nonzero CLI exit.
+
+    Returns:
+        True when the object should be normalized via ``_require_ok``.
+    """
+    if payload.get("ok") is False:
+        return True
+    error = payload.get("error")
+    return isinstance(error, Mapping) and payload.get("ok") is not True
+
+
 def _safe_error_message(kind: str, raw: object) -> str:
     """Return a compact error message that never echoes document bodies.
 
@@ -521,8 +567,8 @@ def _sanitized_env() -> dict[str, str]:
     """Build a minimal environment for child processes.
 
     Returns:
-        Environment mapping that preserves PATH and fake-lark test knobs while
-        avoiding wholesale dumping of secrets into logs.
+        Environment mapping that preserves PATH, Windows AppData path values,
+        and fake-lark test knobs while avoiding wholesale dumping of secrets.
     """
     allowed = {
         "PATH",
@@ -532,6 +578,8 @@ def _sanitized_env() -> dict[str, str]:
         "TEMP",
         "HOME",
         "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
         "FAKE_LARK_MODE",
         "FAKE_LARK_RECORD",
         "FAKE_LARK_VERSION",

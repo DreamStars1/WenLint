@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from wenlint.feishu.document import parse_document_ref
-from wenlint.feishu.lark import LarkCliError, LarkClient
+from wenlint.feishu.lark import LarkCliError, LarkClient, _sanitized_env
 
 DOC_URL = "https://acme.feishu.cn/docx/DocToken"
 FAKE_SCRIPT = Path(__file__).resolve().parent / "fake_lark_cli.py"
@@ -77,6 +77,47 @@ def test_update_requires_revision_and_block_replace(fake_lark):
     )
 
 
+def test_replace_block_exact_argv_and_single_xml_format(fake_lark):
+    client = _client(fake_lark)
+    client.replace_block(RESOLVED_REF, "blk1", "<p>新文本</p>", 9)
+    assert fake_lark.last_argv == [
+        "docs",
+        "+update",
+        "--doc",
+        DOC_URL,
+        "--command",
+        "block_replace",
+        "--block-id",
+        "blk1",
+        "--content",
+        "<p>新文本</p>",
+        "--doc-format",
+        "xml",
+        "--revision-id",
+        "9",
+        "--as",
+        "user",
+        "--format",
+        "json",
+    ]
+    fmt_indexes = [
+        i for i, item in enumerate(fake_lark.last_argv) if item == "--doc-format"
+    ]
+    assert len(fmt_indexes) == 1
+    assert fake_lark.last_argv[fmt_indexes[0] + 1] == "xml"
+    assert fake_lark.last_argv.count("xml") == 1
+
+
+@pytest.mark.parametrize("revision_id", [0, -1])
+def test_replace_block_rejects_non_positive_revision(fake_lark, revision_id):
+    client = _client(fake_lark)
+    with pytest.raises(LarkCliError) as exc:
+        client.replace_block(RESOLVED_REF, "blk1", "<p>x</p>", revision_id)
+    assert exc.value.kind == "invalid_revision"
+    assert exc.value.retryable is False
+    assert not Path(fake_lark.record).exists()
+
+
 def test_hostile_url_and_xml_remain_single_argv_elements(fake_lark):
     client = _client(fake_lark)
     hostile_xml = '<p>a &amp; b; echo hi</p><p onclick="x">y</p>'
@@ -118,6 +159,62 @@ def test_nonzero_exit_normalized(fake_lark, monkeypatch):
         client.fetch(parse_document_ref(DOC_URL))
     assert exc.value.kind in {"process_error", "nonzero_exit"}
     assert "boom" not in str(exc.value.details)
+
+
+def test_nonzero_exit_stdout_json_preserves_auth_privately(fake_lark, monkeypatch):
+    leak = '<p block-id="secret">leaked body</p>'
+    monkeypatch.setenv("FAKE_LARK_MODE", "nonzero_stdout_auth")
+    monkeypatch.setenv("FAKE_LARK_LEAK", leak)
+    client = _client(fake_lark)
+    with pytest.raises(LarkCliError) as exc:
+        client.fetch(parse_document_ref(DOC_URL))
+    assert exc.value.kind == "auth"
+    assert exc.value.details.get("hint") == "run lark-cli auth login"
+    assert "stdout" not in exc.value.details
+    assert "stderr" not in exc.value.details
+    assert leak not in exc.value.message
+    assert leak not in str(exc.value.details)
+
+
+def test_nonzero_exit_stderr_json_preserves_scope_privately(fake_lark, monkeypatch):
+    leak = "https://acme.feishu.cn/docx/DocToken?<secret>"
+    monkeypatch.setenv("FAKE_LARK_MODE", "nonzero_stderr_scope")
+    monkeypatch.setenv("FAKE_LARK_LEAK", leak)
+    client = _client(fake_lark)
+    with pytest.raises(LarkCliError) as exc:
+        client.fetch(parse_document_ref(DOC_URL))
+    assert exc.value.kind == "scope"
+    assert exc.value.details.get("missing_scopes") == ["docs:read"]
+    assert exc.value.details.get("hint") == "grant docs:read"
+    assert "stdout" not in exc.value.details
+    assert "stderr" not in exc.value.details
+    assert leak not in exc.value.message
+    assert leak not in str(exc.value.details)
+
+
+def test_nonzero_exit_unstructured_fallback_is_private(fake_lark, monkeypatch):
+    leak = "<h1>secret chapter</h1>"
+    monkeypatch.setenv("FAKE_LARK_MODE", "nonzero_unstructured")
+    monkeypatch.setenv("FAKE_LARK_LEAK", leak)
+    client = _client(fake_lark)
+    with pytest.raises(LarkCliError) as exc:
+        client.fetch(parse_document_ref(DOC_URL))
+    assert exc.value.kind == "nonzero_exit"
+    assert "stdout" not in exc.value.details
+    assert "stderr" not in exc.value.details
+    assert leak not in exc.value.message
+    assert leak not in str(exc.value.details)
+    assert leak not in repr(exc.value)
+
+
+def test_sanitized_env_preserves_appdata_paths(monkeypatch):
+    monkeypatch.setenv("APPDATA", r"C:\Users\tester\AppData\Roaming")
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\tester\AppData\Local")
+    monkeypatch.setenv("SECRET_TOKEN", "must-not-appear")
+    env = _sanitized_env()
+    assert env["APPDATA"] == r"C:\Users\tester\AppData\Roaming"
+    assert env["LOCALAPPDATA"] == r"C:\Users\tester\AppData\Local"
+    assert "SECRET_TOKEN" not in env
 
 
 def test_malformed_json_fails_closed(fake_lark, monkeypatch):

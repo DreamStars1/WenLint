@@ -68,6 +68,46 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("boom\n")
         return 1
 
+    if mode == "nonzero_stdout_auth":
+        leak = os.environ.get("FAKE_LARK_LEAK", "<p>secret</p>")
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": {
+                        "type": "auth",
+                        "message": leak,
+                        "hint": "run lark-cli auth login",
+                    },
+                }
+            )
+        )
+        return 1
+
+    if mode == "nonzero_stderr_scope":
+        leak = os.environ.get("FAKE_LARK_LEAK", "https://example/leak")
+        sys.stdout.write("not-json-prelude\n")
+        sys.stderr.write(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": {
+                        "type": "scope",
+                        "message": leak,
+                        "missing_scopes": ["docs:read"],
+                        "hint": "grant docs:read",
+                    },
+                }
+            )
+        )
+        return 1
+
+    if mode == "nonzero_unstructured":
+        leak = os.environ.get("FAKE_LARK_LEAK", "<h1>secret</h1>")
+        sys.stdout.write(f"raw failure {leak}\n")
+        sys.stderr.write(f"boom {leak}\n")
+        return 1
+
     if mode == "bad_json":
         sys.stdout.write("{not-json")
         return 0
