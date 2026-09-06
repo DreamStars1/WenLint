@@ -29,9 +29,21 @@ python <skill_dir>/scripts/zh_prose_smell.py <目录>/
 
 # JSON 输出（脚本消费）
 python <skill_dir>/scripts/zh_prose_smell.py 文档.md --json
+
+# fix 模式（自动修复：删 AI 腔引导词/重复词，显示 diff 不写盘）
+python <skill_dir>/scripts/zh_prose_smell.py 文档.md --fix
+# fix + 写盘（先备份 .bak）
+python <skill_dir>/scripts/zh_prose_smell.py 文档.md --fix --apply
 ```
 
 输出格式（vale 风格）：`文件:行:列  级别  类别: 命中的词`
+
+## 两种模式
+
+1. **review（默认）**：只检查报告，不改文件
+2. **fix（--fix）**：自动修复后输出 diff；`--apply` 写盘（自动备份 .bak）
+   - 自动改：AI 腔引导词（词后接逗号/句读/行尾时）+ 中文相邻重复词
+   - 不自动改（fix 后列出待人工/LLM）：定语结构（"综上所述的方案"）、模糊词、强调词、超长句
 
 ## 检测类别
 

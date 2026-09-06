@@ -9,13 +9,31 @@
 # 安装依赖（仅 jieba）
 pip install jieba
 
-# 检查单个文件或整个目录（.md/.txt/.rst）
+# 模式一：review（只检查，默认）
 python scripts/zh_prose_smell.py 文档.md
 python scripts/zh_prose_smell.py 论文调研目录/
+
+# 模式二：fix（自动修复 + 显示 diff，不写盘）
+python scripts/zh_prose_smell.py 文档.md --fix
+
+# 模式二 + 写盘（先自动备份 .bak）
+python scripts/zh_prose_smell.py 文档.md --fix --apply
 
 # JSON 输出（供脚本消费）
 python scripts/zh_prose_smell.py 文档.md --json
 ```
+
+### fix 模式的安全规则
+
+**自动改**（语义无损）：
+- 删除 AI 腔引导词：总而言之、综上所述、值得注意的是、众所周知…（仅当词后接逗号/句读/行尾）
+- 中文相邻重复词去重："真的真的" → "真的"
+
+**绝不自动改**（留给人工/LLM，fix 后报告列出）：
+- 定语结构：如"综上所述的方案"（删了破坏句法）——词后接"的/之/地"时跳过
+- 模糊词（大概/可能/好像）——删除改变语义确定性
+- 空洞强调词（非常/真的/超级）——语气取舍因人而异
+- 超长句——需要理解语义才能拆
 
 ## 输出示例
 

@@ -40,6 +40,13 @@ REDUNDANT = [
 ]
 AI_HALLUCINATION_HEDGE = ["可能", "似乎", "在某种意义上", "某种程度上"]
 
+# 可安全自动删除的 AI 腔引导词/填充词（删了语义无损）
+AUTO_REMOVE = [
+    "总而言之", "综上所述", "值得注意的是", "众所周知", "毋庸置疑",
+    "不难发现", "由此可见", "需要注意的是", "换句话说",
+    "it's worth noting", "in conclusion", "moreover",
+]
+
 WORD_BLACKLIST = {
     "AI味/废话填充": (AI_CLICHE, "warning"),
     "模糊词": (FUZZY_WORDS, "warning"),
@@ -152,6 +159,55 @@ def check_long_sentence(text):
     return hits
 
 
+def fix_text(text):
+    """自动修复：删除可安全删除的 AI 腔引导词 + 中文重复词去重。
+    安全规则：
+      - 词后接"的/之/地/和/与"等（定语结构，如"综上所述的方案"）→ 不自动删
+      - 词后接逗号/句读/行尾 → 删词并吞掉紧接的逗号
+    返回 (修复后文本, changes[(行号, 说明)]). 不改代码块内容。"""
+    lines = text.split("\n")
+    out, changes = [], []
+    in_fence = False
+    for i, line in enumerate(lines, 1):
+        s = line.lstrip()
+        if s.startswith("```") or s.startswith("~~~"):
+            in_fence = not in_fence
+            out.append(line)
+            continue
+        if in_fence:
+            out.append(line)
+            continue
+        new = line
+        for w in AUTO_REMOVE:
+            idx = new.find(w)
+            if idx < 0:
+                continue
+            tail = new[idx + len(w):].lstrip()
+            # 定语结构保护：词后紧跟"的/之/地"等 → 跳过（句法复杂，留给人工）
+            if tail.startswith(("的", "之", "地", "和", "与", "同", "及")):
+                continue
+            if tail.startswith(("，", ",", "、", "；", ";")):
+                tail = tail[1:].lstrip()
+            cand = new[:idx] + tail
+            if cand != new:
+                changes.append((i, f"删除 AI 腔「{w}」"))
+                new = cand
+        # 中文相邻重复词去重（如"真的真的"→"真的"，格式保真）
+        cand = re.sub(r"([\u4e00-\u9fff]{2,8})\1", r"\1", new)
+        if cand != new:
+            changes.append((i, "重复词去重"))
+            new = cand
+        out.append(new)
+    # 同行多 change 合并为一条注记（避免重复 diff）
+    merged = []
+    seen_lines = set()
+    for line_no, note in changes:
+        if line_no not in seen_lines:
+            merged.append((line_no, note))
+            seen_lines.add(line_no)
+    return "\n".join(out), merged
+
+
 def scan_file(fp):
     """扫描单个文件，返回 (file, hits)"""
     try:
@@ -176,6 +232,8 @@ def main():
     parser = argparse.ArgumentParser(description="中文散文坏味检查器（jieba 分词 + 词表规则）")
     parser.add_argument("path", help="文件或目录")
     parser.add_argument("--json", action="store_true", help="JSON 输出")
+    parser.add_argument("--fix", action="store_true", help="修复模式：自动删除 AI 腔引导词/重复词，输出 diff")
+    parser.add_argument("--apply", action="store_true", help="与 --fix 连用：将修复写回文件（先备份 .bak）")
     args = parser.parse_args()
 
     files = []
@@ -187,6 +245,43 @@ def main():
                 if f.endswith((".md", ".txt", ".rst")):
                     files.append(os.path.join(root, f))
 
+    # ---- 修复模式 ----
+    if args.fix:
+        for fp in sorted(files):
+            try:
+                raw = open(fp, encoding="utf-8").read()
+            except Exception as e:
+                print(f"!! 无法读取 {fp}: {e}", file=sys.stderr)
+                continue
+            fixed, changes = fix_text(raw)
+            if not changes:
+                print(f"✅ {fp}: 无可自动修复项")
+                continue
+            print(f"--- {fp}: {len(changes)} 处自动修复 ---")
+            raw_lines = raw.split("\n")
+            for line_no, note in changes:
+                old = raw_lines[line_no - 1].strip()
+                new = fixed.split("\n")[line_no - 1].strip()
+                print(f"  L{line_no} {note}")
+                print(f"    - {old}")
+                print(f"    + {new}")
+            if args.apply:
+                backup = fp + ".bak"
+                open(backup, "w", encoding="utf-8").write(raw)
+                open(fp, "w", encoding="utf-8").write(fixed)
+                print(f"  ✍️ 已写回 {fp}（备份 {backup}）")
+        # 修复后报告剩余（需人工/LLM 的：模糊词、强调词、超长句）
+        print("\n=== 修复后剩余（需人工/LLM 处理）===")
+        results = [scan_file(fp) for fp in sorted(files)]
+        remaining = [(fp, h) for fp, h in results if h]
+        if not remaining:
+            print("✅ 全部干净")
+        for fp, hits in remaining:
+            for l, c, lv, cat, w in hits:
+                print(f"{fp}:{l}:{c}  {lv:10s}  {cat}: {w}")
+        return
+
+    # ---- 纯 review 模式 ----
     results = [scan_file(fp) for fp in sorted(files)]
 
     if args.json:
