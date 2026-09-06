@@ -95,7 +95,15 @@ RULES = [
     {
         "id": "S001", "name": "long-sentence", "category": "超长句",
         "severity": "suggestion", "message": "句子过长（{len}字 > {max}），建议拆分",
-        "max_len": 60,  # academic profile 放宽到 80
+        "max_len": 60,  # academic/instruction profile 调整
+        "fixable": False,
+    },
+    # ---------- A: 文件结构（文件级规则）----------
+    {
+        "id": "A900", "name": "god-file", "category": "文件结构",
+        "severity": "suggestion",
+        "message": "SKILL.md 主文件过长（{len} 行 > {max}）——细节应拆到 references/ 子文件，主文件只留触发条件/快速上手",
+        "max_lines": 300,
         "fixable": False,
     },
 ]

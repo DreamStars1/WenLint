@@ -16,4 +16,8 @@ PROFILES = {
     "formal": {"disable": [], "severity_override": {
         "H001": "warning", "E001": "warning", "C002": "error",
     }, "params": {"S001": {"max_len": 60}}},
+    # 指令/技术文档（SKILL.md、README、操作手册）：句子常含命令/路径/术语，
+    # 60 字阈值不适用；结构问题（主文件过大）由 A900 文件级规则负责
+    "instruction": {"disable": [], "severity_override": {},
+                    "params": {"S001": {"max_len": 110}}},
 }

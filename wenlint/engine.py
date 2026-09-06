@@ -107,6 +107,23 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
     """
     if _cn_ratio(text) < 0.05:
         return []
+
+    # A900 文件级规则：SKILL.md 主文件过大（God File 坏味）
+    if filename.endswith("SKILL.md"):
+        rule = by_id("A900")
+        n_lines = text.count("\n") + 1
+        if rule and n_lines > rule.get("max_lines", 300):
+            findings_900 = [{
+                "line": 1, "col": 1, "rule_id": "A900",
+                "severity": rule["severity"], "category": rule["category"],
+                "match": "", "message": rule["message"].format(
+                    len=n_lines, max=rule.get("max_lines", 300)),
+            }]
+        else:
+            findings_900 = []
+    else:
+        findings_900 = []
+
     prof = PROFILES.get(profile, PROFILES[DEFAULT_PROFILE])
     disabled = set(prof.get("disable", []))
     sev_ov = prof.get("severity_override", {})
@@ -175,6 +192,7 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
                         "message": rule["message"].format(w=w, len=0, max=0),
                     })
 
+    findings += findings_900
     findings.sort(key=lambda f: (f["line"], f["col"]))
     return findings
 

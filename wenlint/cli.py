@@ -20,6 +20,16 @@ from .profiles import PROFILES
 LEVEL_RANK = {"error": 3, "warning": 2, "suggestion": 1, "candidate": 0}
 
 
+def _effective_profile(fp, requested):
+    """文件名 SKILL.md → instruction 阈值（长句 110），其他文件 → 请求的 profile。
+    用户显式 --profile 时尊重用户选择。"""
+    if requested != "general":
+        return requested
+    if fp.endswith("SKILL.md"):
+        return "instruction"
+    return requested
+
+
 def collect_files(path):
     if os.path.isfile(path):
         return [path]
@@ -73,7 +83,7 @@ def main(argv=None):
             except OSError as e:
                 print(f"!! 无法读取 {fp}: {e}", file=sys.stderr)
                 continue
-            fixed, changes = fix_text(raw, profile=args.profile)
+            fixed, changes = fix_text(raw, profile=_effective_profile(fp, args.profile))
             fixed_map[fp] = fixed
             if not changes:
                 print(f"✅ {fp}: 无可自动修复项")
@@ -103,7 +113,7 @@ def main(argv=None):
         remaining = []
         for fp in files:
             if fp in fixed_map:
-                findings = scan_text(fixed_map[fp], profile=args.profile)
+                findings = scan_text(fixed_map[fp], profile=_effective_profile(fp, args.profile), filename=fp)
             else:
                 continue
             remaining += [(fp, f) for f in findings]
@@ -129,7 +139,7 @@ def main(argv=None):
             print(f"!! 无法读取 {fp}: {e}", file=sys.stderr)
             continue
         file_texts[fp] = text.split("\n")
-        findings = scan_text(text, profile=args.profile)
+        findings = scan_text(text, profile=_effective_profile(fp, args.profile), filename=fp)
         total += len(findings)
         results.append((fp, findings))
 
