@@ -8,8 +8,8 @@
 """
 import re
 
-from .rules import RULES, by_id
 from .profiles import PROFILES
+from .rules import RULES, by_id
 
 DEFAULT_PROFILE = "general"
 
@@ -34,7 +34,7 @@ def line_role(line):
     if re.match(r"^[-*+]\s", s) or re.match(r"^\d+[.、)]\s", s):
         return "list_item"
     # 缩进 4 空格（代码块）
-    if line.startswith("    ") or line.startswith("\t"):
+    if line.startswith(("    ", "\t")):
         return "fence"
     return "paragraph"
 
@@ -58,7 +58,7 @@ def mask_line(line, protect_quotes=False):
     masked = re.sub(r"\[([^\]]*)\]\(([^)]*)\)", link_sub, masked)
     # HTML 标签 + 注释
     masked = re.sub(r"<[^>\n]+>", lambda m: _blank(m.group(0)), masked)
-    masked = re.sub(r"<!--.*?-->", lambda m: _blank(m.group(0)), masked, flags=re.S)
+    masked = re.sub(r"<!--.*?-->", lambda m: _blank(m.group(0)), masked, flags=re.DOTALL)
     # 删除线
     masked = re.sub(r"~~[^~\n]*~~", lambda m: _blank(m.group(0)), masked)
     if protect_quotes:

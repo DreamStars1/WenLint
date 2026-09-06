@@ -14,7 +14,7 @@ import os
 import sys
 
 from . import __version__
-from .engine import scan_text, fix_text
+from .engine import fix_text, scan_text
 from .profiles import PROFILES
 
 LEVEL_RANK = {"error": 3, "warning": 2, "suggestion": 1, "candidate": 0}
@@ -80,7 +80,8 @@ def main(argv=None):
         fixed_map = {}
         for fp in files:
             try:
-                raw = open(fp, encoding="utf-8").read()
+                with open(fp, encoding="utf-8") as fh:
+                    raw = fh.read()
             except OSError as e:
                 print(f"!! 无法读取 {fp}: {e}", file=sys.stderr)
                 continue
@@ -135,7 +136,8 @@ def main(argv=None):
     file_texts = {}
     for fp in files:
         try:
-            text = open(fp, encoding="utf-8").read()
+            with open(fp, encoding="utf-8") as fh:
+                text = fh.read()
         except OSError as e:
             print(f"!! 无法读取 {fp}: {e}", file=sys.stderr)
             continue
