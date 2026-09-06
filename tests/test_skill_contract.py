@@ -39,6 +39,9 @@ def test_conflict_invalidates_chapter_approval():
     text = Path("references/feishu.md").read_text(encoding="utf-8")
     assert "目标章节" in text
     assert "重新确认" in text or "重新批准" in text
+    assert "document_id" in text
+    assert "expected_fingerprints" in text
+    assert "任务重启" in text
 
 
 def test_every_block_write_requires_fetch_remap():

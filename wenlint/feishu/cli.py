@@ -8,19 +8,26 @@ I/O, scanning, and patch application live in sibling modules so local
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
+from pathlib import Path
 from typing import Sequence
 
 from wenlint import __version__
 from wenlint.feishu.document import DocumentRefError, parse_document_ref
 from wenlint.feishu.inspection import inspect_document
 from wenlint.feishu.lark import LarkCliError, LarkClient
-from wenlint.feishu.patches import ManifestError, PatchValidationError, apply_approved_section, load_manifest
+from wenlint.feishu.patches import (
+    ManifestError,
+    PatchValidationError,
+    apply_approved_section,
+    load_manifest,
+)
 from wenlint.feishu.projection import XmlSafetyError
 from wenlint.feishu.sections import SectionError
-from pathlib import Path
-import dataclasses
+
+_LEVEL_RANK = {"error": 3, "warning": 2, "suggestion": 1, "candidate": 0}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -53,13 +60,29 @@ def _cmd_apply(args: argparse.Namespace) -> int:
     try:
         ref = parse_document_ref(args.url)
         client = LarkClient()
+        client.probe()
         # Resolve document identity before comparing the manifest document_id.
         payload = client.fetch(ref)
-        document = payload["data"]["document"]  # type: ignore[index]
+        data = payload.get("data") if isinstance(payload, dict) else None
+        document = data.get("document") if isinstance(data, dict) else None
+        if not isinstance(document, dict):
+            raise LarkCliError(
+                "invalid_response",
+                "fetch response is missing document metadata",
+                retryable=False,
+            )
+        document_id = document.get("document_id")
+        url = document.get("url")
+        if not document_id or not url:
+            raise LarkCliError(
+                "unresolved_document",
+                "fetch response did not resolve a Docx document id and URL",
+                retryable=False,
+            )
         resolved = dataclasses.replace(
             ref,
-            document_id=str(document["document_id"]),
-            canonical_url=str(document["url"]).split("?", 1)[0],
+            document_id=str(document_id),
+            canonical_url=str(url).split("?", 1)[0],
         )
         plan = load_manifest(Path(args.patch_file), resolved)
         result = apply_approved_section(client, resolved, plan)
@@ -81,6 +104,14 @@ def _cmd_apply(args: argparse.Namespace) -> int:
             exit_code=3,
             details=exc.details,
         )
+    except (KeyError, TypeError, ValueError) as exc:
+        return _emit_error(
+            "invalid_response",
+            "fetch or apply payload failed schema validation",
+            retryable=False,
+            exit_code=3,
+            details={"hint": type(exc).__name__},
+        )
 
     print(json.dumps(result.to_dict(), ensure_ascii=False))
     if result.status == "success":
@@ -97,25 +128,23 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
         args: Parsed arguments containing ``url`` and optional ``profile``.
 
     Returns:
-        Exit code 0 on success, or a mapped failure code.
+        Exit code 0 on success, 1 when ``--fail-level`` trips, or a mapped failure.
     """
     try:
         ref = parse_document_ref(args.url)
         client = LarkClient()
+        client.probe()
         report = inspect_document(client, ref, profile=getattr(args, "profile", "general"))
     except DocumentRefError as exc:
         return _emit_error(exc.kind, str(exc), retryable=False, exit_code=2)
     except XmlSafetyError as exc:
         return _emit_error(exc.kind, str(exc), retryable=False, exit_code=2)
     except LarkCliError as exc:
-        exit_code = 3
-        if exc.kind in {"invalid_response", "missing_revision", "invalid_json"}:
-            exit_code = 3
         return _emit_error(
             exc.kind,
             exc.message,
             retryable=exc.retryable,
-            exit_code=exit_code,
+            exit_code=3,
             details=exc.details,
         )
     except FileNotFoundError as exc:
@@ -127,9 +156,27 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
         )
 
     payload = report.to_dict()
-    if getattr(args, "json", False) or True:
-        # Feishu inspect always emits structured JSON for Skill consumption.
-        print(json.dumps(payload, ensure_ascii=False))
+    print(json.dumps(payload, ensure_ascii=False))
+    return _inspect_exit_code(payload.get("findings") or [], getattr(args, "fail_level", None))
+
+
+def _inspect_exit_code(findings: list, fail_level: str | None) -> int:
+    """Map inspect findings to exit 0 or 1 when a fail level is configured.
+
+    Args:
+        findings: Serialized finding list from the inspection report.
+        fail_level: Optional severity gate.
+
+    Returns:
+        ``1`` when any finding meets the gate; otherwise ``0``.
+    """
+    if not fail_level:
+        return 0
+    threshold = _LEVEL_RANK[fail_level]
+    for finding in findings:
+        severity = str(finding.get("severity") or finding.get("type") or "suggestion")
+        if _LEVEL_RANK.get(severity, 0) >= threshold:
+            return 1
     return 0
 
 
@@ -167,6 +214,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         shortcut.add_argument("--json", action="store_true")
         shortcut.add_argument("--profile", default="general")
         shortcut.add_argument(
+            "--fail-level",
+            choices=["error", "warning", "suggestion"],
+            default=None,
+            help="Exit 1 when findings meet or exceed this severity",
+        )
+        shortcut.add_argument(
             "--version",
             action="version",
             version=f"wenlint-feishu {__version__}",
@@ -182,6 +235,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     inspect_p.add_argument("url", help="HTTPS Docx or Wiki URL")
     inspect_p.add_argument("--json", action="store_true", help="Emit JSON on stdout")
     inspect_p.add_argument("--profile", default="general", help="WenLint profile")
+    inspect_p.add_argument(
+        "--fail-level",
+        choices=["error", "warning", "suggestion"],
+        default=None,
+        help="Exit 1 when findings meet or exceed this severity",
+    )
 
     apply_p = sub.add_parser("apply", help="Apply an approved section patch manifest")
     apply_p.add_argument("url", help="HTTPS Docx or Wiki URL")
@@ -193,23 +252,6 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     apply_p.add_argument("--json", action="store_true", help="Emit JSON on stdout")
 
     return parser.parse_args(argv_list)
-
-
-def _not_implemented(route: str) -> int:
-    """Emit a compact stderr error for routes not yet wired.
-
-    Args:
-        route: Logical route name recorded in the structured error.
-
-    Returns:
-        Always ``2`` so unfinished routes fail closed.
-    """
-    return _emit_error(
-        "not_implemented",
-        f"wenlint-feishu {route} is not implemented yet",
-        retryable=False,
-        exit_code=2,
-    )
 
 
 def _emit_error(

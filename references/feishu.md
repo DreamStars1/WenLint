@@ -59,7 +59,26 @@ inspect → four-class review → overall summary
 6. 每章结束后询问是否继续下一章；不要预先写入尚未确认的章节。
 7. 全部结束后做一次最终全文 inspect 摘要。
 
-无响应、含糊批准、KEEP、ASK、或不支持映射 → 不写。目标章节变化 → 重扫并重新确认；其他章节变化不阻止当前章在 fingerprint 未变时继续。
+无响应、含糊批准、KEEP、ASK、或不支持映射 → 不写。
+
+## 批准记录绑定与失效
+
+批准记录只在当前任务内存中有效，必须同时绑定：
+
+- 文档 ID（实际 Docx `document_id`）
+- 章节定位器（section locator）
+- 批准时的章节 fingerprint
+- 已批准 patch 的完整内容（before/after/规则/节点坐标）
+- 每个 block 写入后的预期章节 fingerprint（`expected_fingerprints`，按写入组顺序）
+
+以下任一情况都会使原批准失效，必须重扫并重新确认：
+
+- 任务重启或会话中断后重新开始
+- 目标章节 fingerprint 变化
+- patch 内容相对批准时发生变化
+- 未被本次批准覆盖的文档范围发生变化并导致 remap/校验失败
+
+目标章节变化 → 重扫并重新确认；其他章节变化不阻止当前章在 fingerprint 未变时继续。
 
 ## 安全写回要点
 

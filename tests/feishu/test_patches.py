@@ -42,7 +42,7 @@ def _manifest_dict(**overrides):
                 "section_locator": "标题[1]",
                 "section_fingerprint": "sha256:placeholder",
                 "block_id": "blkParagraph",
-                "node_path": [0],
+                "node_path": [],
                 "source_start": 0,
                 "source_end": 9,
                 "before": "普通正文可能含糊。",
@@ -65,8 +65,9 @@ def write_manifest(tmp_path: Path, **overrides) -> Path:
     return path
 
 
-def test_manifest_must_match_document_and_section(tmp_path):
+def test_manifest_must_match_document_and_section(tmp_path, monkeypatch):
     path = write_manifest(tmp_path, document_id="another-doc")
+    monkeypatch.chdir(tmp_path)
     with pytest.raises(ManifestError) as exc:
         load_manifest(path, REF)
     assert exc.value.kind == "document_mismatch"
@@ -90,14 +91,14 @@ def test_overlapping_patches_are_rejected(snapshot):
         section_locator="标题[1]",
         initial_fingerprint=snapshot.sections[0].fingerprint,
         approved_patch_ids=("p1", "p2"),
-        expected_fingerprints=("a", "b"),
+        expected_fingerprints=("a",),
         patches=(
             Patch(
                 patch_id="p1",
                 section_locator="标题[1]",
                 section_fingerprint=snapshot.sections[0].fingerprint,
                 block_id="blkParagraph",
-                node_path=(0,),
+                node_path=(),
                 source_start=2,
                 source_end=5,
                 before="正文可",
@@ -110,7 +111,7 @@ def test_overlapping_patches_are_rejected(snapshot):
                 section_locator="标题[1]",
                 section_fingerprint=snapshot.sections[0].fingerprint,
                 block_id="blkParagraph",
-                node_path=(0,),
+                node_path=(),
                 source_start=4,
                 source_end=7,
                 before="可能含",
@@ -138,7 +139,7 @@ def test_empty_or_equal_before_after_rejected(snapshot):
                 section_locator="标题[1]",
                 section_fingerprint=snapshot.sections[0].fingerprint,
                 block_id="blkParagraph",
-                node_path=(0,),
+                node_path=(),
                 source_start=0,
                 source_end=9,
                 before="普通正文可能含糊。",

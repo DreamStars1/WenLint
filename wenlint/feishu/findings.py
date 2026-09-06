@@ -262,8 +262,30 @@ def _bind_range(
             _section_for_spans(snapshot, spans),
         )
 
-    # Duplicate identical source elsewhere does not affect this exact map; the
-    # coordinate path already selected one contiguous writable node.
+    # Spec §10.3: mapping must be unique. Identical source text at another
+    # writable node makes automatic writeback unsafe.
+    if _duplicate_source_elsewhere(
+        snapshot,
+        match,
+        block_id=block_id,
+        node_path=node_path,
+        source_start=source_start,
+        source_end=source_end,
+    ):
+        return (
+            FindingLocation(
+                block_id=block_id,
+                block_url=_block_url(snapshot, block_id),
+                node_path=node_path,
+                mapping_status="duplicate_source",
+                writable=False,
+                reason="duplicate_source",
+                source_start=source_start,
+                source_end=source_end,
+            ),
+            _section_for_block(snapshot, block_id),
+        )
+
     section = _section_for_block(snapshot, block_id)
     return (
         FindingLocation(
@@ -327,19 +349,63 @@ def _section_for_spans(
 
 
 def _section_for_block(snapshot: DocumentSnapshot, block_id: str) -> Section | None:
-    """Find the unique section that owns ``block_id``.
+    """Find the deepest section that owns ``block_id``.
+
+    Nested headings produce overlapping fingerprint ranges (parent includes
+    child blocks). Finding binding must still pick one chapter: the deepest
+    matching section by heading level, then longest locator.
 
     Args:
         snapshot: Document snapshot.
         block_id: Block id to locate.
 
     Returns:
-        Owning section or ``None`` when missing or duplicated.
+        Owning section or ``None`` when missing.
     """
     matches = [section for section in snapshot.sections if block_id in section.block_ids]
-    if len(matches) != 1:
+    if not matches:
         return None
-    return matches[0]
+    return max(matches, key=lambda section: (section.level, len(section.locator)))
+
+
+def _duplicate_source_elsewhere(
+    snapshot: DocumentSnapshot,
+    match: str,
+    *,
+    block_id: str,
+    node_path: tuple[int, ...],
+    source_start: int,
+    source_end: int,
+) -> bool:
+    """Return whether ``match`` also occurs as another writable source range.
+
+    Args:
+        snapshot: Document snapshot.
+        match: Exact source text already bound at one location.
+        block_id: Bound block id.
+        node_path: Bound node path.
+        source_start: Bound inclusive source offset.
+        source_end: Bound exclusive source offset.
+
+    Returns:
+        ``True`` when another distinct writable span contains the same text.
+    """
+    if not match:
+        return False
+    for span in snapshot.source_map:
+        if not span.writable or span.block_id is None or span.node_path is None:
+            continue
+        if (
+            span.block_id == block_id
+            and span.node_path == node_path
+            and span.source_start <= source_start
+            and span.source_end >= source_end
+        ):
+            continue
+        text = snapshot.projection[span.projection_start : span.projection_end]
+        if match in text:
+            return True
+    return False
 
 
 def _block_url(snapshot: DocumentSnapshot, block_id: str | None) -> str | None:

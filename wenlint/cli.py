@@ -161,7 +161,11 @@ def _ignored(fp, patterns, base=None):
         bool：True 表示应忽略。
     """
     import fnmatch
-    rel = os.path.relpath(fp, base or os.getcwd())
+    try:
+        rel = os.path.relpath(fp, base or os.getcwd())
+    except ValueError:
+        # Cross-volume paths (Windows) cannot be relativized; keep absolute form.
+        rel = fp
     for pat in patterns:
         if pat.endswith("/"):
             if rel.startswith(pat):
@@ -202,7 +206,10 @@ def _display_path(fp):
     """
     if not os.path.isabs(fp):
         return fp
-    rel = os.path.relpath(fp)
+    try:
+        rel = os.path.relpath(fp)
+    except ValueError:
+        return fp
     return rel if len(rel) <= len(fp) else fp
 
 

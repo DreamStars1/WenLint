@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree.ElementTree import Element
 
+from wenlint.feishu.document import DocumentRefError
 from wenlint.feishu.inspection import inspect_document
 from wenlint.feishu.lark import LarkCliError, LarkClient
 from wenlint.feishu.models import (
@@ -172,6 +173,23 @@ def load_manifest(path: Path, expected_ref: DocumentRef) -> ApprovedSectionPlan:
         node_path = item.get("node_path")
         if not isinstance(node_path, list) or not all(isinstance(x, int) for x in node_path):
             raise ManifestError("node_path must be a list of ints", kind="manifest_schema")
+        required = (
+            "section_locator",
+            "section_fingerprint",
+            "block_id",
+            "source_start",
+            "source_end",
+            "before",
+            "after",
+            "rule_id",
+            "rationale",
+        )
+        missing = [key for key in required if key not in item]
+        if missing:
+            raise ManifestError(
+                f"patch is missing required fields: {missing}",
+                kind="manifest_schema",
+            )
         patches.append(
             Patch(
                 patch_id=patch_id,
@@ -211,6 +229,13 @@ def load_manifest(path: Path, expected_ref: DocumentRef) -> ApprovedSectionPlan:
             kind="missing_patch",
         )
 
+    for key in ("section_locator", "initial_fingerprint"):
+        if key not in payload or not isinstance(payload[key], str) or not payload[key]:
+            raise ManifestError(
+                f"manifest field {key} is required",
+                kind="manifest_schema",
+            )
+
     return ApprovedSectionPlan(
         document_id=str(document_id),
         section_locator=str(payload["section_locator"]),
@@ -245,6 +270,7 @@ def validate_patches(
         )
 
     by_block: dict[str, list[Patch]] = defaultdict(list)
+    block_order: list[str] = []
     for patch in plan.patches:
         if patch.section_locator != plan.section_locator:
             raise PatchValidationError(
@@ -268,7 +294,20 @@ def validate_patches(
             )
         _assert_source_matches(snapshot, patch)
         _assert_structure_preserved(snapshot, patch)
+        if patch.block_id not in by_block:
+            block_order.append(patch.block_id)
         by_block[patch.block_id].append(patch)
+
+    if len(plan.expected_fingerprints) != len(block_order):
+        raise PatchValidationError(
+            "expected_fingerprints must match the number of block write groups",
+            kind="expected_fingerprints_mismatch",
+        )
+    if any(not fingerprint for fingerprint in plan.expected_fingerprints):
+        raise PatchValidationError(
+            "expected_fingerprints entries must be non-empty",
+            kind="expected_fingerprints_mismatch",
+        )
 
     for block_id, group in by_block.items():
         ordered = sorted(group, key=lambda item: item.source_start)
@@ -295,6 +334,11 @@ def apply_approved_section(
 
     Returns:
         ``ApplyResult`` describing success, conflict, or partial failure.
+
+    Raises:
+        PatchValidationError: For static manifest/structure invalidity that
+            must surface as CLI exit 2 rather than a document conflict.
+        ManifestError: Propagated for callers that load then apply.
     """
     if ref.document_id is None or ref.canonical_url is None:
         return ApplyResult(
@@ -311,6 +355,7 @@ def apply_approved_section(
     remaining = list(plan.patches)
     expected_fps = list(plan.expected_fingerprints)
     write_index = 0
+    warnings: list[object] = []
     snapshot: DocumentSnapshot
 
     try:
@@ -327,7 +372,17 @@ def apply_approved_section(
                 details={"kind": "section_changed"},
             )
         validate_patches(snapshot, plan)
-    except (LarkCliError, PatchValidationError, SectionError, XmlSafetyError) as exc:
+    except LarkCliError as exc:
+        return ApplyResult(
+            status="conflict",
+            applied_patch_ids=(),
+            unapplied_patch_ids=tuple(p.patch_id for p in remaining),
+            reconfirm_patch_ids=tuple(p.patch_id for p in remaining),
+            revision_id=None,
+            message=exc.message,
+            details={"kind": exc.kind},
+        )
+    except (SectionError, XmlSafetyError) as exc:
         kind = getattr(exc, "kind", "preflight_failed")
         return ApplyResult(
             status="conflict",
@@ -338,6 +393,19 @@ def apply_approved_section(
             message=str(exc),
             details={"kind": kind},
         )
+    except PatchValidationError as exc:
+        if exc.kind == "section_changed":
+            return ApplyResult(
+                status="conflict",
+                applied_patch_ids=(),
+                unapplied_patch_ids=tuple(p.patch_id for p in remaining),
+                reconfirm_patch_ids=tuple(p.patch_id for p in remaining),
+                revision_id=snapshot.revision_id if "snapshot" in locals() else None,
+                message=str(exc),
+                details={"kind": exc.kind},
+            )
+        # Static invalidity (overlap, noop, fingerprint count, …) → exit 2.
+        raise
 
     while remaining:
         try:
@@ -349,11 +417,24 @@ def apply_approved_section(
                 snapshot.revision_id,
                 str(exc),
                 "missing_section",
+                warnings=warnings,
             )
 
         section = locate_section(snapshot, plan.section_locator)
         pre_write_fingerprint = section.fingerprint
-        remaining = list(_remap_patches(snapshot, remaining))
+        try:
+            remaining = list(
+                _remap_patches(snapshot, remaining, plan.section_locator)
+            )
+        except PatchValidationError as exc:
+            return _partial_or_conflict(
+                applied,
+                remaining,
+                snapshot.revision_id,
+                str(exc),
+                getattr(exc, "kind", "remap_failed"),
+                warnings=warnings,
+            )
         if not remaining:
             break
 
@@ -368,18 +449,27 @@ def apply_approved_section(
                 snapshot.revision_id,
                 str(exc),
                 getattr(exc, "kind", "patch_failed"),
+                warnings=warnings,
             )
 
-        expected_fingerprint = (
-            expected_fps[write_index] if write_index < len(expected_fps) else None
-        )
+        if write_index >= len(expected_fps):
+            return _partial_or_conflict(
+                applied,
+                remaining,
+                snapshot.revision_id,
+                "missing expected fingerprint for block write",
+                "expected_fingerprints_mismatch",
+                warnings=warnings,
+            )
+        expected_fingerprint = expected_fps[write_index]
         try:
-            _replace_with_optional_retry(
+            replace_payload = _replace_with_optional_retry(
                 client,
                 ref,
                 snapshot,
                 plan,
                 block_id,
+                block_patches,
                 patched_xml,
                 pre_write_fingerprint,
             )
@@ -390,12 +480,52 @@ def apply_approved_section(
                 snapshot.revision_id,
                 exc.message,
                 exc.kind,
+                warnings=warnings,
+            )
+        except (PatchValidationError, SectionError, XmlSafetyError) as exc:
+            return _partial_or_conflict(
+                applied,
+                remaining,
+                snapshot.revision_id,
+                str(exc),
+                getattr(exc, "kind", "replace_failed"),
+                warnings=warnings,
             )
 
-        snapshot = _fetch_snapshot(client, ref)
+        replace_warnings = []
+        if isinstance(replace_payload, Mapping):
+            data = replace_payload.get("data")
+            if isinstance(data, Mapping):
+                raw_warnings = data.get("warnings") or []
+                if isinstance(raw_warnings, list) and raw_warnings:
+                    replace_warnings = list(raw_warnings)
+                    warnings.extend(replace_warnings)
+
+        try:
+            snapshot = _fetch_snapshot(client, ref)
+        except (LarkCliError, XmlSafetyError) as exc:
+            applied.extend(p.patch_id for p in block_patches)
+            leftover = [
+                p for p in remaining if p.patch_id not in {x.patch_id for x in block_patches}
+            ]
+            return ApplyResult(
+                status="partial_failure",
+                applied_patch_ids=tuple(applied),
+                unapplied_patch_ids=tuple(p.patch_id for p in leftover),
+                reconfirm_patch_ids=tuple(p.patch_id for p in leftover),
+                revision_id=None,
+                message=str(getattr(exc, "message", exc)),
+                details={
+                    "kind": getattr(exc, "kind", "post_write_fetch_failed"),
+                    "warnings": warnings,
+                    "verified_after_warnings": False,
+                },
+            )
+
         try:
             verify_section = locate_section(snapshot, plan.section_locator)
-        except SectionError as exc:
+            _verify_block_patches(snapshot, block_patches)
+        except (SectionError, PatchValidationError, XmlSafetyError) as exc:
             applied.extend(p.patch_id for p in block_patches)
             leftover = [
                 p for p in remaining if p.patch_id not in {x.patch_id for x in block_patches}
@@ -407,10 +537,14 @@ def apply_approved_section(
                 reconfirm_patch_ids=tuple(p.patch_id for p in leftover),
                 revision_id=snapshot.revision_id,
                 message=str(exc),
-                details={"kind": "verify_section_missing"},
+                details={
+                    "kind": getattr(exc, "kind", "verify_failed"),
+                    "warnings": warnings,
+                    "verified_after_warnings": False,
+                },
             )
 
-        if expected_fingerprint and verify_section.fingerprint != expected_fingerprint:
+        if verify_section.fingerprint != expected_fingerprint:
             applied.extend(p.patch_id for p in block_patches)
             leftover = [
                 p for p in remaining if p.patch_id not in {x.patch_id for x in block_patches}
@@ -422,19 +556,53 @@ def apply_approved_section(
                 reconfirm_patch_ids=tuple(p.patch_id for p in leftover),
                 revision_id=snapshot.revision_id,
                 message="post-write section fingerprint verification failed",
-                details={"kind": "verify_failed"},
+                details={
+                    "kind": "verify_failed",
+                    "warnings": warnings,
+                    "verified_after_warnings": False,
+                },
             )
 
         applied_ids = {item.patch_id for item in block_patches}
         applied.extend(p.patch_id for p in block_patches)
-        remaining = [
-            patch
-            for patch in _remap_patches(snapshot, remaining)
-            if patch.patch_id not in applied_ids
-        ]
+        leftover = [patch for patch in remaining if patch.patch_id not in applied_ids]
+        try:
+            remaining = list(
+                _remap_patches(snapshot, leftover, plan.section_locator)
+            )
+        except PatchValidationError as exc:
+            return ApplyResult(
+                status="partial_failure",
+                applied_patch_ids=tuple(applied),
+                unapplied_patch_ids=tuple(p.patch_id for p in leftover),
+                reconfirm_patch_ids=tuple(p.patch_id for p in leftover),
+                revision_id=snapshot.revision_id,
+                message=str(exc),
+                details={
+                    "kind": getattr(exc, "kind", "remap_failed"),
+                    "warnings": warnings,
+                    "verified_after_warnings": not bool(replace_warnings),
+                },
+            )
         write_index += 1
 
-    inspect_document(client, ref)
+    try:
+        inspect_document(client, ref)
+    except (LarkCliError, XmlSafetyError, DocumentRefError) as exc:
+        return ApplyResult(
+            status="partial_failure",
+            applied_patch_ids=tuple(applied),
+            unapplied_patch_ids=(),
+            reconfirm_patch_ids=(),
+            revision_id=snapshot.revision_id,
+            message=str(getattr(exc, "message", exc)),
+            details={
+                "kind": getattr(exc, "kind", "final_inspect_failed"),
+                "warnings": warnings,
+                "verified_after_warnings": False,
+            },
+        )
+
     return ApplyResult(
         status="success",
         applied_patch_ids=tuple(applied),
@@ -442,6 +610,10 @@ def apply_approved_section(
         reconfirm_patch_ids=(),
         revision_id=snapshot.revision_id,
         message="approved section patches applied and verified",
+        details={
+            "warnings": warnings,
+            "verified_after_warnings": True,
+        },
     )
 
 
@@ -454,18 +626,44 @@ def _fetch_snapshot(client: LarkClient, ref: DocumentRef) -> DocumentSnapshot:
 
     Returns:
         Fresh ``DocumentSnapshot``.
+
+    Raises:
+        LarkCliError: When the fetch payload lacks required fields.
+        XmlSafetyError: When XML projection fails.
     """
     payload = client.fetch(ref)
-    data = payload["data"]  # type: ignore[index]
-    document = data["document"]  # type: ignore[index]
+    data = payload.get("data") if isinstance(payload, Mapping) else None
+    if not isinstance(data, Mapping):
+        raise LarkCliError(
+            "invalid_response",
+            "fetch response is missing data object",
+            retryable=False,
+        )
+    document = data.get("document")
+    if not isinstance(document, Mapping):
+        raise LarkCliError(
+            "invalid_response",
+            "fetch response is missing document metadata",
+            retryable=False,
+        )
+    document_id = document.get("document_id")
+    url = document.get("url")
+    revision_id = document.get("revision_id")
+    content = data.get("content")
+    if not document_id or not url or revision_id is None or not isinstance(content, str):
+        raise LarkCliError(
+            "invalid_response",
+            "fetch response is missing required document fields",
+            retryable=False,
+        )
     resolved = DocumentRef(
         input_url=ref.input_url,
         kind=ref.kind,
         input_token=ref.input_token,
-        document_id=str(document["document_id"]),
-        canonical_url=str(document["url"]).split("?", 1)[0],
+        document_id=str(document_id),
+        canonical_url=str(url).split("?", 1)[0],
     )
-    return project_xml(str(data["content"]), resolved, int(document["revision_id"]))
+    return project_xml(content, resolved, int(revision_id))
 
 
 def _replace_with_optional_retry(
@@ -474,10 +672,14 @@ def _replace_with_optional_retry(
     snapshot: DocumentSnapshot,
     plan: ApprovedSectionPlan,
     block_id: str,
+    block_patches: list[Patch],
     patched_xml: str,
     pre_write_fingerprint: str,
-) -> None:
+) -> Mapping[str, object]:
     """Replace one block, retrying once on revision conflict if section is unchanged.
+
+    On retry, remaps patches structurally onto the latest snapshot and regenerates
+    patched XML so stale block ids are never reused.
 
     Args:
         client: Lark adapter.
@@ -485,15 +687,19 @@ def _replace_with_optional_retry(
         snapshot: Snapshot used for the first attempt.
         plan: Approved plan (for locator checks on retry).
         block_id: Block id to replace on the first attempt.
-        patched_xml: Complete patched block XML.
+        block_patches: Patches for this block write group.
+        patched_xml: Complete patched block XML for the first attempt.
         pre_write_fingerprint: Expected section fingerprint before this write.
+
+    Returns:
+        Successful replace response mapping.
 
     Raises:
         LarkCliError: When replace fails or a second conflict occurs.
+        PatchValidationError: When structural remap fails on retry.
     """
     try:
-        client.replace_block(ref, block_id, patched_xml, snapshot.revision_id)
-        return
+        return client.replace_block(ref, block_id, patched_xml, snapshot.revision_id)
     except LarkCliError as first_exc:
         if first_exc.kind != "revision_conflict":
             raise
@@ -506,10 +712,12 @@ def _replace_with_optional_retry(
             "target section changed during revision conflict",
             retryable=False,
         )
-    latest_block_id = _find_block_id_for_xml(retry_snapshot, patched_xml, block_id)
+    remapped = list(_remap_patches(retry_snapshot, block_patches, plan.section_locator))
+    latest_block_id = remapped[0].block_id
+    latest_xml = _merge_block_patches(retry_snapshot, latest_block_id, remapped)
     try:
-        client.replace_block(
-            ref, latest_block_id, patched_xml, retry_snapshot.revision_id
+        return client.replace_block(
+            ref, latest_block_id, latest_xml, retry_snapshot.revision_id
         )
     except LarkCliError as exc:
         raise LarkCliError(
@@ -518,36 +726,6 @@ def _replace_with_optional_retry(
             retryable=False,
             details=exc.details,
         ) from exc
-
-
-def _find_block_id_for_xml(
-    snapshot: DocumentSnapshot, patched_xml: str, previous_id: str
-) -> str:
-    """Locate the latest block id for a patched XML payload.
-
-    Args:
-        snapshot: Latest snapshot.
-        patched_xml: Patched block XML.
-        previous_id: Previous block id used as a fallback hint.
-
-    Returns:
-        Block id to use for the retry replace.
-    """
-    # Prefer an exact block-id attribute still present after remapping suffixes.
-    root = parse_blocks(snapshot.xml)
-    # Match by canonical text content equality with the patched element.
-    patched = parse_blocks(patched_xml)[0]
-    patched_text = "".join(patched.itertext())
-    for child in root:
-        if "".join(child.itertext()) == patched_text:
-            return child.attrib.get("block-id") or child.attrib.get("block_id") or previous_id
-    # Fallback: previous id with a single ``-new`` suffix used by tests.
-    candidate = f"{previous_id}-new"
-    for child in root:
-        block_id = child.attrib.get("block-id") or child.attrib.get("block_id")
-        if block_id == candidate:
-            return candidate
-    return previous_id
 
 
 def _group_by_block(patches: list[Patch]) -> dict[str, list[Patch]]:
@@ -598,32 +776,58 @@ def _merge_block_patches(
     return xml
 
 
-def _remap_patches(snapshot: DocumentSnapshot, patches: list[Patch]) -> list[Patch]:
-    """Remap patches onto the latest block ids and node paths by exact text.
+def _remap_patches(
+    snapshot: DocumentSnapshot,
+    patches: list[Patch],
+    section_locator: str,
+) -> list[Patch]:
+    """Remap patches onto latest block ids using structural section coordinates.
+
+    Never searches by free-text occurrence. Within the target section, each patch
+    must resolve uniquely via ``node_path`` plus exact ``before`` offsets.
 
     Args:
         snapshot: Latest snapshot.
         patches: Patches using potentially stale block ids.
+        section_locator: Approved section locator.
 
     Returns:
-        Patches with refreshed block ids/node paths where uniquely found.
+        Patches with refreshed block ids.
+
+    Raises:
+        PatchValidationError: When a patch cannot be uniquely remapped.
     """
+    section = locate_section(snapshot, section_locator)
     remapped: list[Patch] = []
     for patch in patches:
-        match = _locate_exact_text(snapshot, patch)
-        if match is None:
-            remapped.append(patch)
-            continue
-        block_id, node_path, source_start, source_end = match
+        candidates: list[str] = []
+        for block_id in section.block_ids:
+            if not block_id:
+                continue
+            try:
+                root = parse_blocks(snapshot.xml)
+                block = find_block(root, block_id)
+                node, is_tail = resolve_text_target(block, patch.node_path)
+            except XmlSafetyError:
+                continue
+            text = (node.tail if is_tail else node.text) or ""
+            if text[patch.source_start : patch.source_end] != patch.before:
+                continue
+            candidates.append(block_id)
+        if len(candidates) != 1:
+            raise PatchValidationError(
+                "patch could not be uniquely remapped on the latest snapshot",
+                kind="remap_failed",
+            )
         remapped.append(
             Patch(
                 patch_id=patch.patch_id,
                 section_locator=patch.section_locator,
                 section_fingerprint=patch.section_fingerprint,
-                block_id=block_id,
-                node_path=node_path,
-                source_start=source_start,
-                source_end=source_end,
+                block_id=candidates[0],
+                node_path=patch.node_path,
+                source_start=patch.source_start,
+                source_end=patch.source_end,
                 before=patch.before,
                 after=patch.after,
                 rule_id=patch.rule_id,
@@ -633,43 +837,47 @@ def _remap_patches(snapshot: DocumentSnapshot, patches: list[Patch]) -> list[Pat
     return remapped
 
 
-def _locate_exact_text(
-    snapshot: DocumentSnapshot, patch: Patch
-) -> tuple[str, tuple[int, ...], int, int] | None:
-    """Find a unique writable occurrence of ``patch.before``.
+def _verify_block_patches(snapshot: DocumentSnapshot, patches: list[Patch]) -> None:
+    """Verify approved replacements are present after a successful write.
 
     Args:
-        snapshot: Current snapshot.
-        patch: Patch whose ``before`` text must still exist.
+        snapshot: Post-write snapshot.
+        patches: Patches that were just written for one block group.
 
-    Returns:
-        ``(block_id, node_path, source_start, source_end)`` or ``None``.
+    Raises:
+        PatchValidationError: When expected ``after`` text is missing.
     """
-    matches: list[tuple[str, tuple[int, ...], int, int]] = []
-    for span in snapshot.source_map:
-        if not span.writable or span.block_id is None or span.node_path is None:
-            continue
-        if span.source_end - span.source_start < len(patch.before):
-            continue
-        # Compare using projection slice that corresponds to this span.
-        text = snapshot.projection[span.projection_start : span.projection_end]
-        start_at = 0
-        while True:
-            index = text.find(patch.before, start_at)
-            if index < 0:
-                break
-            matches.append(
-                (
-                    span.block_id,
-                    span.node_path,
-                    span.source_start + index,
-                    span.source_start + index + len(patch.before),
-                )
+    for patch in patches:
+        expected = Patch(
+            patch_id=patch.patch_id,
+            section_locator=patch.section_locator,
+            section_fingerprint=patch.section_fingerprint,
+            block_id=patch.block_id,
+            node_path=patch.node_path,
+            source_start=patch.source_start,
+            source_end=patch.source_start + len(patch.after),
+            before=patch.after,
+            after=patch.after,
+            rule_id=patch.rule_id,
+            rationale=patch.rationale,
+        )
+        try:
+            remapped = _remap_patches(snapshot, [expected], patch.section_locator)[0]
+        except PatchValidationError as exc:
+            raise PatchValidationError(
+                "post-write block text verification failed",
+                kind="verify_failed",
+            ) from exc
+        root = parse_blocks(snapshot.xml)
+        block = find_block(root, remapped.block_id)
+        node, is_tail = resolve_text_target(block, remapped.node_path)
+        text = (node.tail if is_tail else node.text) or ""
+        actual = text[remapped.source_start : remapped.source_end]
+        if actual != patch.after:
+            raise PatchValidationError(
+                "post-write block text verification failed",
+                kind="verify_failed",
             )
-            start_at = index + 1
-    if len(matches) != 1:
-        return None
-    return matches[0]
 
 
 def _assert_source_matches(snapshot: DocumentSnapshot, patch: Patch) -> None:
@@ -768,6 +976,8 @@ def _partial_or_conflict(
     revision_id: int | None,
     message: str,
     kind: str,
+    *,
+    warnings: list[object] | None = None,
 ) -> ApplyResult:
     """Build a conflict or partial_failure result.
 
@@ -777,11 +987,16 @@ def _partial_or_conflict(
         revision_id: Latest known revision.
         message: Compact error message.
         kind: Stable failure kind.
+        warnings: Safe warning summaries collected from updates.
 
     Returns:
         ``ApplyResult`` with status depending on whether writes occurred.
     """
     unapplied = tuple(p.patch_id for p in remaining if p.patch_id not in set(applied))
+    details: dict[str, object] = {"kind": kind}
+    if warnings:
+        details["warnings"] = list(warnings)
+        details["verified_after_warnings"] = False
     if applied:
         return ApplyResult(
             status="partial_failure",
@@ -790,7 +1005,7 @@ def _partial_or_conflict(
             reconfirm_patch_ids=unapplied,
             revision_id=revision_id,
             message=message,
-            details={"kind": kind},
+            details=details,
         )
     return ApplyResult(
         status="conflict",
@@ -799,5 +1014,5 @@ def _partial_or_conflict(
         reconfirm_patch_ids=unapplied,
         revision_id=revision_id,
         message=message,
-        details={"kind": kind},
+        details=details,
     )

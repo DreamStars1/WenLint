@@ -194,7 +194,8 @@ def resolve_text_target(
     """Resolve the element and whether the edit targets ``tail``.
 
     Convention:
-    - ``()`` or ``(0,)`` on a text-only block edits ``block.text``.
+    - ``()`` edits ``block.text`` (root text node).
+    - ``(0,)`` on a childless block also edits ``block.text`` for older manifests.
     - ``(child_index, ...)`` walks element children.
     - A final ``-1`` selects the ``tail`` of the resolved child.
 
@@ -208,10 +209,11 @@ def resolve_text_target(
     Raises:
         XmlSafetyError: If the path cannot be resolved.
     """
-    if not node_path or node_path == (0,):
-        if list(block) and node_path == (0,):
-            # Explicit child 0 when children exist.
-            return list(block)[0], False
+    if not node_path:
+        return block, False
+    # Legacy manifests recorded root text as ``(0,)``; keep that only when the
+    # block has no element children so it cannot collide with child index 0.
+    if node_path == (0,) and not list(block):
         return block, False
 
     is_tail = node_path[-1] == -1
@@ -316,13 +318,13 @@ def _project_element(
     Returns:
         Updated projection cursor.
     """
-    text_path = path if path else (0,)
+    # Root text uses ``()`` so it never collides with child index ``0``.
     if element.text:
         # Link URLs never appear as element.text of <a>; href stays in attrib.
         cursor = _append_text(
             element.text,
             block_id,
-            text_path,
+            path,
             0,
             parts,
             source_map,

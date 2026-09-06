@@ -88,7 +88,7 @@ def test_serialize_and_replace_round_trip():
         section_locator="一级标题[1]",
         section_fingerprint="x",
         block_id="blkParagraph",
-        node_path=(0,),
+        node_path=(),
         source_start=0,
         source_end=len("普通正文可能含糊。"),
         before="普通正文可能含糊。",

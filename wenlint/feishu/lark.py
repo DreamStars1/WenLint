@@ -32,6 +32,7 @@ _PROBE_FETCH_NEEDLES = (
     "full",
     "--as",
     "user",
+    "--format",
 )
 _PROBE_UPDATE_NEEDLES = (
     "docs",
@@ -40,6 +41,7 @@ _PROBE_UPDATE_NEEDLES = (
     "--revision-id",
     "--as",
     "user",
+    "--format",
 )
 
 
