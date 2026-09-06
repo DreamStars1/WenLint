@@ -20,8 +20,9 @@ import os
 import sys
 
 from . import __version__
-from .engine import scan_text, fix_text
+from .fixer import fix_text
 from .profiles import PROFILES
+from .scanner import scan_text
 
 LEVEL_RANK = {"error": 3, "warning": 2, "suggestion": 1, "candidate": 0}
 DOC_EXTS = (".md", ".txt", ".rst", ".markdown")
@@ -30,6 +31,14 @@ DOC_EXTS = (".md", ".txt", ".rst", ".markdown")
 # ============ 路由层 ============
 
 def main(argv=None):
+    """CLI 入口：极轻路由，只做参数解析与 fix/review 分发。
+
+    Args:
+        argv: 命令行参数列表；None 时用 sys.argv[1:]。
+
+    Returns:
+        int：进程退出码（0 通过 / 1 有 ≥fail-level 命中 / 2 无输入文件）。
+    """
     args = _parse_args(argv)
     files = _collect_files(args.path)
     if not files:
@@ -43,6 +52,14 @@ def main(argv=None):
 # ============ 参数与输入 ============
 
 def _parse_args(argv):
+    """解析命令行参数（argparse 细节，不承载业务逻辑）。
+
+    Args:
+        argv: 原始参数列表。
+
+    Returns:
+        argparse.Namespace：含 path/fix/apply/json/profile/fail-level 等。
+    """
     p = argparse.ArgumentParser(
         prog="wenlint",
         description="WenLint：中文写作静态检查器（规则 ID + profile + 安全 fix）",
@@ -62,8 +79,18 @@ def _parse_args(argv):
 
 
 def _effective_profile(fp, requested):
-    """文件名 SKILL.md → instruction 阈值（长句 50），其他文件 → 请求的 profile。
-    用户显式 --profile 时尊重用户选择。"""
+    """按文件类型决定生效 profile。
+
+    规则：SKILL.md（指令文档）长句收紧到 50 字（instruction profile），
+    其余文件用请求的 profile；用户显式指定 --profile 时一律尊重。
+
+    Args:
+        fp: 文件路径。
+        requested: 用户请求的 profile 名。
+
+    Returns:
+        str：实际生效的 profile 名。
+    """
     if requested != "general":
         return requested
     if fp.endswith("SKILL.md"):
@@ -72,7 +99,14 @@ def _effective_profile(fp, requested):
 
 
 def _collect_files(paths):
-    """多路径收集：文件直接收，目录递归收支持的扩展名。"""
+    """收集待检查文件（多路径输入展开）。
+
+    Args:
+        paths: 文件或目录路径列表。
+
+    Returns:
+        list[str]：排序去重后的文件路径（.md/.txt/.rst/.markdown）。
+    """
     files = []
     for p in paths:
         if os.path.isfile(p):
@@ -85,7 +119,14 @@ def _collect_files(paths):
 
 
 def _load_texts(files):
-    """读取文件 → {fp: text}（跳过不可读文件并告警）。"""
+    """批量读取文件内容。
+
+    Args:
+        files: 文件路径列表。
+
+    Returns:
+        dict[str, str]：{fp: text}；不可读文件跳过并输出告警。
+    """
     texts = {}
     for fp in files:
         try:
@@ -103,6 +144,15 @@ def _display_path(fp):
 # ============ review 入口（业务步骤编排）============
 
 def _run_review(files, args):
+    """Review 业务步骤编排：加载 → 扫描 → 输出 → 退出码。
+
+    Args:
+        files: 待检查文件列表。
+        args: 解析后的命令行参数。
+
+    Returns:
+        int：退出码（--fail-level 生效时按最重命中判定）。
+    """
     texts = _load_texts(files)
     results = _scan_all(texts, args.profile)
     findings = [f for _, fs in results for f in fs]
@@ -120,7 +170,15 @@ def _run_review(files, args):
 
 
 def _scan_all(texts, profile):
-    """{fp: text} → [(fp, findings)]，按文件逐个扫描。"""
+    """批量扫描（按文件逐个执行 scan_text）。
+
+    Args:
+        texts: {fp: text} 映射。
+        profile: 请求的 profile（内部再按文件类型细化）。
+
+    Returns:
+        list[tuple[str, list]]：[(fp, findings), ...]。
+    """
     results = []
     for fp, text in texts.items():
         results.append((fp, scan_text(text, profile=_effective_profile(fp, profile),
@@ -129,6 +187,12 @@ def _scan_all(texts, profile):
 
 
 def _emit_json(results, texts):
+    """输出 JSON（每条命中附带上下文行，供 LLM 语义层消费）。
+
+    Args:
+        results: [(fp, findings), ...]。
+        texts: {fp: text}，用于提取命中行上下文。
+    """
     out = []
     for fp, findings in results:
         lines = texts[fp].split("\n")
@@ -144,6 +208,11 @@ def _emit_json(results, texts):
 
 
 def _emit_summary(results):
+    """输出命中汇总（文件: 数量 + 总数）。
+
+    Args:
+        results: [(fp, findings), ...]。
+    """
     per = "  ".join(f"{_display_path(fp)}: {len(h)}" for fp, h in results if h)
     total = sum(len(h) for _, h in results)
     print(f"\n✖ {total} 处（{per}）")
@@ -158,7 +227,15 @@ def _format_finding(fp, f):
 
 
 def _exit_code(findings, fail_level):
-    """--fail-level 时：存在 >= 该级别的命中 → 1。"""
+    """按 fail_level 计算进程退出码。
+
+    Args:
+        findings: 全部命中列表（可为空）。
+        fail_level: error/warning/suggestion 或 None（不失败）。
+
+    Returns:
+        int：0 或 1。
+    """
     if not fail_level:
         return 0
     worst = max((LEVEL_RANK[f["severity"]] for f in findings), default=0)
@@ -168,6 +245,15 @@ def _exit_code(findings, fail_level):
 # ============ fix 入口（业务步骤编排）============
 
 def _run_fix(files, args):
+    """Fix 业务步骤编排：加载 → 修复 → 备份写回 → diff → 剩余扫描。
+
+    Args:
+        files: 待修复文件列表。
+        args: 解析后的命令行参数。
+
+    Returns:
+        int：退出码。
+    """
     texts = _load_texts(files)
     fixed_map, diffs = _fix_all(texts, args.profile)
     if args.apply:
@@ -179,7 +265,16 @@ def _run_fix(files, args):
 
 
 def _fix_all(texts, profile):
-    """{fp: text} → (fixed_map, [(fp, changes)])。"""
+    """批量执行安全修复。
+
+    Args:
+        texts: {fp: text} 映射。
+        profile: 请求的 profile。
+
+    Returns:
+        (fixed_map, diffs)：{fp: 修复后文本} 与
+        [(fp, raw, fixed, changes)]（仅有变更的文件）。
+    """
     fixed_map, diffs = {}, []
     for fp, raw in texts.items():
         fixed, changes = fix_text(raw, profile=_effective_profile(fp, profile))
@@ -190,7 +285,13 @@ def _fix_all(texts, profile):
 
 
 def _write_back(files, texts, fixed_map):
-    """备份原文件 + 写回修复文本。"""
+    """备份原文件并写回修复文本（Markdown-safe 修复的落盘环节）。
+
+    Args:
+        files: 文件列表。
+        texts: 原始文本 {fp: text}（写入 .bak）。
+        fixed_map: 修复后文本 {fp: text}（写回原文件）。
+    """
     for fp in files:
         if fp not in fixed_map:
             continue
@@ -202,6 +303,11 @@ def _write_back(files, texts, fixed_map):
 
 
 def _print_fix_diff(diffs):
+    """打印每个文件的修复 diff（- 原文行 / + 修复行）。
+
+    Args:
+        diffs: [(fp, raw, fixed, changes)]。
+    """
     for fp, raw, fixed, changes in diffs:
         raw_lines, fixed_lines = raw.split("\n"), fixed.split("\n")
         print(f"--- {_display_path(fp)}: {len(changes)} 处自动修复 ---")
@@ -212,7 +318,18 @@ def _print_fix_diff(diffs):
 
 
 def _scan_remaining(fixed_map, profile):
-    """修复后剩余：扫描修复后的文本（而非磁盘原文件）。"""
+    """扫描修复后文本，输出仍需人工判断的剩余命中。
+
+    修复对象是内存中的 fixed 文本而非磁盘文件——保证 --fix（不写盘）
+    预览时剩余列表反映真实修复结果。
+
+    Args:
+        fixed_map: {fp: 修复后文本}。
+        profile: 请求的 profile。
+
+    Returns:
+        list[tuple[str, list]]：[(fp, remaining_findings), ...]。
+    """
     return [(fp, scan_text(fixed, profile=_effective_profile(fp, profile),
                            filename=fp))
             for fp, fixed in fixed_map.items()]

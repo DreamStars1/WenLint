@@ -4,7 +4,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from wenlint.engine import scan_text, mask_text, fix_text  # noqa: E402
+from wenlint.markdown import mask_text  # noqa: E402
+from wenlint.scanner import scan_text  # noqa: E402
 
 BASE = os.path.dirname(__file__)
 

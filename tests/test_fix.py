@@ -4,7 +4,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from wenlint.engine import fix_text, scan_text  # noqa: E402
+from wenlint.fixer import fix_text  # noqa: E402
+from wenlint.scanner import scan_text  # noqa: E402
 
 
 def test_fix_removes_leading_cliche():
