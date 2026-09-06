@@ -1,8 +1,8 @@
 """Command-line entry for Feishu Docx/Wiki inspection and approved writeback.
 
-This module owns only argparse routing and exit codes. Document I/O, scanning,
-and patch application live in sibling modules so local ``wenlint`` remains
-Feishu-independent.
+This module owns only argparse routing, JSON emission, and exit codes. Document
+I/O, scanning, and patch application live in sibling modules so local
+``wenlint`` remains Feishu-independent.
 """
 
 from __future__ import annotations
@@ -13,29 +13,71 @@ import sys
 from typing import Sequence
 
 from wenlint import __version__
+from wenlint.feishu.document import DocumentRefError, parse_document_ref
+from wenlint.feishu.inspection import inspect_document
+from wenlint.feishu.lark import LarkCliError, LarkClient
+from wenlint.feishu.projection import XmlSafetyError
 
 
 def main(argv: list[str] | None = None) -> int:
     """Route ``wenlint-feishu`` subcommands and the URL inspect shortcut.
-
-    Until later tasks wire inspect/apply behavior, those routes return exit
-    code 2 with a structured ``not_implemented`` error so callers fail closed
-    instead of silently doing nothing.
 
     Args:
         argv: Command-line arguments without the program name. ``None`` uses
             ``sys.argv[1:]``.
 
     Returns:
-        Process exit code. ``--help`` / ``--version`` return 0; unimplemented
-        routes return 2.
+        Process exit code from the Feishu CLI contract.
     """
     args = _parse_args(argv)
-    if args.command == "inspect" or args.url is not None:
-        return _not_implemented("inspect")
+    if args.command == "inspect" or getattr(args, "url", None) is not None:
+        return _cmd_inspect(args)
     if args.command == "apply":
         return _not_implemented("apply")
-    return _not_implemented("unknown")
+    return _emit_error("invalid_input", "unknown command", retryable=False, exit_code=2)
+
+
+def _cmd_inspect(args: argparse.Namespace) -> int:
+    """Run read-only inspection for a Docx/Wiki URL.
+
+    Args:
+        args: Parsed arguments containing ``url`` and optional ``profile``.
+
+    Returns:
+        Exit code 0 on success, or a mapped failure code.
+    """
+    try:
+        ref = parse_document_ref(args.url)
+        client = LarkClient()
+        report = inspect_document(client, ref, profile=getattr(args, "profile", "general"))
+    except DocumentRefError as exc:
+        return _emit_error(exc.kind, str(exc), retryable=False, exit_code=2)
+    except XmlSafetyError as exc:
+        return _emit_error(exc.kind, str(exc), retryable=False, exit_code=2)
+    except LarkCliError as exc:
+        exit_code = 3
+        if exc.kind in {"invalid_response", "missing_revision", "invalid_json"}:
+            exit_code = 3
+        return _emit_error(
+            exc.kind,
+            exc.message,
+            retryable=exc.retryable,
+            exit_code=exit_code,
+            details=exc.details,
+        )
+    except FileNotFoundError as exc:
+        return _emit_error(
+            "missing_executable",
+            str(exc),
+            retryable=False,
+            exit_code=3,
+        )
+
+    payload = report.to_dict()
+    if getattr(args, "json", False) or True:
+        # Feishu inspect always emits structured JSON for Skill consumption.
+        print(json.dumps(payload, ensure_ascii=False))
+    return 0
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -45,8 +87,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         argv: Raw argument list, or ``None`` for ``sys.argv[1:]``.
 
     Returns:
-        Parsed namespace. Shortcut form sets ``command="inspect"`` and
-        ``url`` to the document URL.
+        Parsed namespace. Shortcut form sets ``command="inspect"``.
     """
     parser = argparse.ArgumentParser(
         prog="wenlint-feishu",
@@ -61,7 +102,6 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         version=f"wenlint-feishu {__version__}",
     )
 
-    # Shortcut: wenlint-feishu <url> --json [--profile PROFILE]
     if argv is None:
         argv = sys.argv[1:]
     argv_list = list(argv)
@@ -109,16 +149,48 @@ def _not_implemented(route: str) -> int:
         route: Logical route name recorded in the structured error.
 
     Returns:
-        Always ``2`` so invalid or unfinished input fails closed.
+        Always ``2`` so unfinished routes fail closed.
+    """
+    return _emit_error(
+        "not_implemented",
+        f"wenlint-feishu {route} is not implemented yet",
+        retryable=False,
+        exit_code=2,
+    )
+
+
+def _emit_error(
+    kind: str,
+    message: str,
+    *,
+    retryable: bool,
+    exit_code: int,
+    details: dict | None = None,
+) -> int:
+    """Print a compact stderr JSON error without document bodies.
+
+    Args:
+        kind: Stable error classifier.
+        message: Human-readable explanation.
+        retryable: Whether a later retry may succeed.
+        exit_code: Process exit code to return.
+        details: Optional safe structured extras.
+
+    Returns:
+        The provided ``exit_code``.
     """
     payload = {
         "ok": False,
-        "kind": "not_implemented",
-        "message": f"wenlint-feishu {route} is not implemented yet",
-        "retryable": False,
+        "kind": kind,
+        "message": message,
+        "retryable": retryable,
     }
+    if details:
+        for key in ("missing_scopes", "hint", "version", "missing_capabilities"):
+            if key in details:
+                payload[key] = details[key]
     print(json.dumps(payload, ensure_ascii=False), file=sys.stderr)
-    return 2
+    return exit_code
 
 
 if __name__ == "__main__":
