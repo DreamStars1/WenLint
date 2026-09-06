@@ -6,7 +6,7 @@ from .scanner import _COMPILED
 DEFAULT_PROFILE = "general"
 
 
-def fix_text(text, profile=DEFAULT_PROFILE):  # noqa: PLR0914 多候选状态变量是修复逻辑所需
+def fix_text(text, profile=DEFAULT_PROFILE):
     """安全自动修复：仅处理高置信白名单规则（C001/C003/R002）。
 
     安全保证：代码块、行内代码、URL、引号内内容、front matter 全部不触碰——

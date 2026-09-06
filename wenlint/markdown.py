@@ -10,7 +10,7 @@ import re
 _FENCE_RE = re.compile(r"^(```|~~~)")
 
 
-def line_role(line):  # noqa: PLR0911 守卫式分类，多 return 是合理风格
+def line_role(line):
     """对一行做角色分类（vale scope 机制的轻量版）。
 
     Args:

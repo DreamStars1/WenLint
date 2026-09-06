@@ -52,7 +52,7 @@ def _cn_ratio(s):
     return cn / len(s)
 
 
-def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):  # noqa: PLR0912,PLR0914 规则分发核心，特判分支是本质复杂度
+def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
     """扫描文本，返回按行列排序的 findings 列表。
 
     Args:
