@@ -121,18 +121,31 @@ def main(argv=None):
     # ---------- review 模式 ----------
     results = []
     total = 0
+    file_texts = {}
     for fp in files:
         try:
             text = open(fp, encoding="utf-8").read()
         except OSError as e:
             print(f"!! 无法读取 {fp}: {e}", file=sys.stderr)
             continue
+        file_texts[fp] = text.split("\n")
         findings = scan_text(text, profile=args.profile)
         total += len(findings)
         results.append((fp, findings))
 
     if args.json:
-        out = [{"file": fp, **f} for fp, findings in results for f in findings]
+        out = []
+        for fp, findings in results:
+            lines = file_texts.get(fp, [])
+            for f in findings:
+                ln = f["line"]
+                # 供 LLM 语义层消费：命中行原文 + 前后各 1 行上下文
+                ctx = {
+                    "before": lines[ln - 2] if ln >= 2 else None,
+                    "line": lines[ln - 1] if 1 <= ln <= len(lines) else None,
+                    "after": lines[ln] if ln < len(lines) else None,
+                }
+                out.append({"file": fp, **f, "context": ctx})
         print(json.dumps(out, ensure_ascii=False, indent=2))
     else:
         for fp, findings in results:
