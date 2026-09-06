@@ -96,6 +96,7 @@ def test_expected_fingerprints_must_match_block_groups():
         document_id="DocToken",
         section_locator=snapshot.sections[0].locator,
         initial_fingerprint=snapshot.sections[0].fingerprint,
+        base_revision=4,
         approved_patch_ids=("p1",),
         expected_fingerprints=(),
         patches=(
@@ -182,6 +183,7 @@ def test_post_write_fetch_failure_is_partial_failure(monkeypatch):
         document_id="DocToken",
         section_locator=section.locator,
         initial_fingerprint=section.fingerprint,
+        base_revision=10,
         approved_patch_ids=("p1",),
         expected_fingerprints=(expected_fp,),
         patches=(

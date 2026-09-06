@@ -6,6 +6,7 @@ validated fetch supplies the actual Docx ``document_id`` and canonical URL.
 
 from __future__ import annotations
 
+import dataclasses
 from urllib.parse import urlsplit
 
 from wenlint.feishu.models import DocumentRef
@@ -85,4 +86,61 @@ def parse_document_ref(raw: str) -> DocumentRef:
         input_token=token,
         document_id=None,
         canonical_url=None,
+    )
+
+
+def resolve_fetched_docx_ref(
+    input_ref: DocumentRef,
+    document_id: str,
+    url: str,
+) -> DocumentRef:
+    """Build a resolved Docx reference from validated fetch metadata.
+
+    Args:
+        input_ref: Original Docx/Wiki input reference.
+        document_id: Actual Docx id returned by fetch.
+        url: Canonical URL returned by fetch (query parameters ignored).
+
+    Returns:
+        Frozen ``DocumentRef`` with non-empty Docx ``document_id`` and
+        ``canonical_url``.
+
+    Raises:
+        DocumentRefError: When the URL is not HTTPS ``/docx/<document_id>``.
+    """
+    if not document_id or not isinstance(document_id, str):
+        raise DocumentRefError(
+            "fetch response did not resolve a Docx document id",
+            kind="unresolved_document",
+        )
+    if not url or not isinstance(url, str):
+        raise DocumentRefError(
+            "fetch response did not resolve a Docx canonical URL",
+            kind="unresolved_document",
+        )
+    cleaned = url.split("?", 1)[0].split("#", 1)[0].strip()
+    try:
+        parsed = parse_document_ref(cleaned)
+    except DocumentRefError as exc:
+        raise DocumentRefError(
+            "fetch canonical URL must be an HTTPS Docx URL",
+            kind="unresolved_document",
+        ) from exc
+    if parsed.kind != "docx":
+        raise DocumentRefError(
+            "fetch must resolve Wiki/Docx inputs to a Docx canonical URL",
+            kind="unresolved_document",
+        )
+    if parsed.input_token != document_id:
+        raise DocumentRefError(
+            "fetch document_id does not match the canonical Docx URL token",
+            kind="unresolved_document",
+        )
+    canonical_url = (
+        f"https://{urlsplit(parsed.input_url).hostname}/docx/{document_id}"
+    )
+    return dataclasses.replace(
+        input_ref,
+        document_id=document_id,
+        canonical_url=canonical_url,
     )

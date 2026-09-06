@@ -9,7 +9,19 @@
 2. 本机已安装并完成用户授权的 `lark-cli`。
 3. `npx skills` **不会**安装 Python 或 `lark-cli`。
 
-缺依赖时给出恢复指引；**禁止**静默 `pip install`、禁止代用户扩大 OAuth scope、禁止读取凭证目录。
+缺依赖时给出可复制的恢复指引，**禁止**静默自动安装、禁止代用户扩大 OAuth scope、禁止读取凭证目录：
+
+```bash
+# 恢复 WenLint / wenlint-feishu（任选其一，由用户自行执行）
+pipx install wenlint
+# 或：python -m pip install wenlint
+
+# 恢复 lark-cli 与用户授权（由用户自行执行；不要代跑、不要改 scope）
+# 按官方文档安装 lark-cli 后：
+lark-cli auth login
+```
+
+确认 `wenlint-feishu --help` 与 `lark-cli --version` 可用后再继续。
 
 ## 意图分流
 
@@ -66,6 +78,7 @@ inspect → four-class review → overall summary
 批准记录只在当前任务内存中有效，必须同时绑定：
 
 - 文档 ID（实际 Docx `document_id`）
+- 基础 revision（`base_revision`）
 - 章节定位器（section locator）
 - 批准时的章节 fingerprint
 - 已批准 patch 的完整内容（before/after/规则/节点坐标）

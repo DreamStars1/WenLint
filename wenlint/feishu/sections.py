@@ -13,14 +13,13 @@ from xml.etree.ElementTree import Element
 from wenlint.feishu.models import DocumentSnapshot, Section
 
 _HEADING_TAGS = {f"h{i}" for i in range(1, 10)}
+# Only drop identifiers that Feishu routinely rewrites without semantic change.
+# Generic resource tokens such as cite ``id`` remain in the fingerprint.
 _VOLATILE_ATTRS = {
     "block-id",
     "block_id",
     "revision-id",
     "revision_id",
-    "id",
-    "record-id",
-    "record_id",
 }
 LEAD_IN_LOCATOR = "文档开头"
 LEAD_IN_TITLE = "文档开头"
@@ -96,27 +95,20 @@ def build_sections(root: Element) -> tuple[Section, ...]:
             )
         )
 
-    sibling_counters: dict[tuple[str, ...], dict[str, int]] = {}
-    path_titles: list[str] = []
-    path_levels: list[int] = []
+    # Stack entries are (title, level, ordinal). Parent identity includes every
+    # ancestor ordinal so duplicate titles under different parents restart at [1].
+    stack: list[tuple[str, int, int]] = []
+    sibling_counters: dict[tuple[tuple[str, int], ...], dict[str, int]] = {}
 
     for heading_pos, (start, level, title, _block_id) in enumerate(headings):
-        while path_levels and path_levels[-1] >= level:
-            path_levels.pop()
-            path_titles.pop()
-
-        path_titles.append(title)
-        path_levels.append(level)
-        path_key = tuple(path_titles[:-1])
-        counters = sibling_counters.setdefault(path_key, {})
+        while stack and stack[-1][1] >= level:
+            stack.pop()
+        parent_key = tuple((entry[0], entry[2]) for entry in stack)
+        counters = sibling_counters.setdefault(parent_key, {})
         counters[title] = counters.get(title, 0) + 1
         ordinal = counters[title]
-        locator = "/".join(
-            f"{part}[{_ordinal_for(path_titles[: index + 1], sibling_counters)}]"
-            for index, part in enumerate(path_titles)
-        )
-        # Recompute locator with stable ordinals along the full path.
-        locator = _locator_for(path_titles, path_levels, headings, heading_pos)
+        stack.append((title, level, ordinal))
+        locator = "/".join(f"{part}[{ord_}]" for part, _lvl, ord_ in stack)
 
         end = len(blocks)
         for later_start, later_level, _later_title, _ in headings[heading_pos + 1 :]:
@@ -172,58 +164,6 @@ def section_fingerprint(element: Element) -> str:
         ``sha256:`` prefixed hex digest.
     """
     return _fingerprint_elements([element])
-
-
-def _locator_for(
-    path_titles: list[str],
-    path_levels: list[int],
-    headings: list[tuple[int, int, str, str]],
-    heading_pos: int,
-) -> str:
-    """Build a locator with one-based same-name sibling ordinals.
-
-    Args:
-        path_titles: Title stack for the current heading.
-        path_levels: Level stack aligned with ``path_titles``.
-        headings: All headings in document order.
-        heading_pos: Index of the current heading in ``headings``.
-
-    Returns:
-        Locator such as ``同名[2]/子节[1]``.
-    """
-    parts: list[str] = []
-    for depth, title in enumerate(path_titles):
-        level = path_levels[depth]
-        parent_titles = tuple(path_titles[:depth])
-        ordinal = 0
-        stack_titles: list[str] = []
-        stack_levels: list[int] = []
-        for index, (_start, heading_level, heading_title, _) in enumerate(headings):
-            while stack_levels and stack_levels[-1] >= heading_level:
-                stack_levels.pop()
-                stack_titles.pop()
-            stack_titles.append(heading_title)
-            stack_levels.append(heading_level)
-            if index > heading_pos:
-                break
-            if (
-                heading_level == level
-                and heading_title == title
-                and tuple(stack_titles[:-1]) == parent_titles
-            ):
-                ordinal += 1
-            if index == heading_pos:
-                break
-        parts.append(f"{title}[{ordinal}]")
-    return "/".join(parts)
-
-
-def _ordinal_for(
-    titles: list[str], sibling_counters: dict[tuple[str, ...], dict[str, int]]
-) -> int:
-    """Compatibility helper retained for clarity in locator construction."""
-    parent = tuple(titles[:-1])
-    return sibling_counters.get(parent, {}).get(titles[-1], 1)
 
 
 def _fingerprint_elements(elements: list[Element]) -> str:

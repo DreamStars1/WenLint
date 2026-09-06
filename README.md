@@ -162,7 +162,7 @@ ASK      资料也不足，需要作者确认（绝不在无依据时删"可能"
 
 ```bash
 pip install pytest
-python -m pytest tests/     # 36 个回归测试（mask/行号/scope/注释状态机/CLI）
+python -m pytest tests/     # 完整回归测试（mask/行号/scope/注释状态机/CLI/飞书适配器）
 ```
 
 ## 仓库结构

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree.ElementTree import Element
 
-from wenlint.feishu.document import DocumentRefError
+from wenlint.feishu.document import DocumentRefError, resolve_fetched_docx_ref
 from wenlint.feishu.inspection import inspect_document
 from wenlint.feishu.lark import LarkCliError, LarkClient
 from wenlint.feishu.models import (
@@ -42,6 +42,7 @@ _ALLOWED_TOP_LEVEL = {
     "document_id",
     "section_locator",
     "initial_fingerprint",
+    "base_revision",
     "approved_patch_ids",
     "expected_fingerprints",
     "patches",
@@ -209,6 +210,11 @@ def load_manifest(path: Path, expected_ref: DocumentRef) -> ApprovedSectionPlan:
     approved_ids = payload.get("approved_patch_ids")
     if not isinstance(approved_ids, list) or not all(isinstance(x, str) for x in approved_ids):
         raise ManifestError("approved_patch_ids must be a string list", kind="manifest_schema")
+    if len(approved_ids) != len(set(approved_ids)):
+        raise ManifestError(
+            "approved_patch_ids must not contain duplicates",
+            kind="duplicate_approved_id",
+        )
     expected_fps = payload.get("expected_fingerprints")
     if not isinstance(expected_fps, list) or not all(isinstance(x, str) for x in expected_fps):
         raise ManifestError(
@@ -235,11 +241,18 @@ def load_manifest(path: Path, expected_ref: DocumentRef) -> ApprovedSectionPlan:
                 f"manifest field {key} is required",
                 kind="manifest_schema",
             )
+    base_revision = payload.get("base_revision")
+    if not isinstance(base_revision, int) or isinstance(base_revision, bool) or base_revision < 0:
+        raise ManifestError(
+            "manifest field base_revision must be a non-negative integer",
+            kind="manifest_schema",
+        )
 
     return ApprovedSectionPlan(
         document_id=str(document_id),
         section_locator=str(payload["section_locator"]),
         initial_fingerprint=str(payload["initial_fingerprint"]),
+        base_revision=base_revision,
         approved_patch_ids=tuple(approved_ids),
         expected_fingerprints=tuple(expected_fps),
         patches=tuple(patches),
@@ -276,6 +289,11 @@ def validate_patches(
             raise PatchValidationError(
                 "patch section_locator does not match the plan",
                 kind="section_mismatch",
+            )
+        if patch.section_fingerprint != plan.initial_fingerprint:
+            raise PatchValidationError(
+                "patch section_fingerprint does not match the approved plan",
+                kind="fingerprint_mismatch",
             )
         if not patch.before or patch.before == patch.after:
             raise PatchValidationError(
@@ -372,16 +390,9 @@ def apply_approved_section(
                 details={"kind": "section_changed"},
             )
         validate_patches(snapshot, plan)
-    except LarkCliError as exc:
-        return ApplyResult(
-            status="conflict",
-            applied_patch_ids=(),
-            unapplied_patch_ids=tuple(p.patch_id for p in remaining),
-            reconfirm_patch_ids=tuple(p.patch_id for p in remaining),
-            revision_id=None,
-            message=exc.message,
-            details={"kind": exc.kind},
-        )
+    except LarkCliError:
+        # Dependency/auth/network/protocol failures must surface as exit 3.
+        raise
     except (SectionError, XmlSafetyError) as exc:
         kind = getattr(exc, "kind", "preflight_failed")
         return ApplyResult(
@@ -392,6 +403,16 @@ def apply_approved_section(
             revision_id=None,
             message=str(exc),
             details={"kind": kind},
+        )
+    except DocumentRefError as exc:
+        return ApplyResult(
+            status="conflict",
+            applied_patch_ids=(),
+            unapplied_patch_ids=tuple(p.patch_id for p in remaining),
+            reconfirm_patch_ids=tuple(p.patch_id for p in remaining),
+            revision_id=None,
+            message=str(exc),
+            details={"kind": getattr(exc, "kind", "unresolved_document")},
         )
     except PatchValidationError as exc:
         if exc.kind == "section_changed":
@@ -656,13 +677,14 @@ def _fetch_snapshot(client: LarkClient, ref: DocumentRef) -> DocumentSnapshot:
             "fetch response is missing required document fields",
             retryable=False,
         )
-    resolved = DocumentRef(
-        input_url=ref.input_url,
-        kind=ref.kind,
-        input_token=ref.input_token,
-        document_id=str(document_id),
-        canonical_url=str(url).split("?", 1)[0],
-    )
+    try:
+        resolved = resolve_fetched_docx_ref(ref, str(document_id), str(url))
+    except DocumentRefError as exc:
+        raise LarkCliError(
+            getattr(exc, "kind", "unresolved_document"),
+            str(exc),
+            retryable=False,
+        ) from exc
     return project_xml(content, resolved, int(revision_id))
 
 
@@ -720,12 +742,14 @@ def _replace_with_optional_retry(
             ref, latest_block_id, latest_xml, retry_snapshot.revision_id
         )
     except LarkCliError as exc:
-        raise LarkCliError(
-            "revision_conflict",
-            "second consecutive revision conflict; stopping",
-            retryable=False,
-            details=exc.details,
-        ) from exc
+        if exc.kind == "revision_conflict":
+            raise LarkCliError(
+                "revision_conflict",
+                "second consecutive revision conflict; stopping",
+                retryable=False,
+                details=exc.details,
+            ) from exc
+        raise
 
 
 def _group_by_block(patches: list[Patch]) -> dict[str, list[Patch]]:
@@ -748,6 +772,9 @@ def _merge_block_patches(
 ) -> str:
     """Apply all patches for one block from highest source offset to lowest.
 
+    Edits mutate a deep-copied block tree in place. Document-wide XML string
+    matching is forbidden so decoy identical fragments cannot be rewritten.
+
     Args:
         snapshot: Current snapshot.
         block_id: Target block id.
@@ -761,17 +788,25 @@ def _merge_block_patches(
         XmlSafetyError: If a replacement cannot be applied.
     """
     ordered = sorted(patches, key=lambda item: item.source_start, reverse=True)
-    working = snapshot
-    xml = None
+    doc = copy.deepcopy(parse_blocks(snapshot.xml))
     for patch in ordered:
-        xml = replace_node_text(working, patch)
-        # Rebuild a temporary snapshot XML with only this block replaced so the
-        # next offset still refers to the original source coordinates.
-        root = parse_blocks(working.xml)
-        original = element_to_xml(find_block(root, block_id))
-        new_doc = working.xml.replace(original, xml, 1)
-        working = project_xml(new_doc, working.ref, working.revision_id)
-    assert xml is not None
+        block = find_block(doc, block_id)
+        try:
+            node, is_tail = resolve_text_target(block, patch.node_path)
+        except XmlSafetyError as exc:
+            raise PatchValidationError(str(exc), kind=exc.kind) from exc
+        text = (node.tail if is_tail else node.text) or ""
+        if text[patch.source_start : patch.source_end] != patch.before:
+            raise PatchValidationError(
+                "patch before text does not match the current XML node",
+                kind="source_mismatch",
+            )
+        new_text = text[: patch.source_start] + patch.after + text[patch.source_end :]
+        if is_tail:
+            node.tail = new_text
+        else:
+            node.text = new_text
+    xml = element_to_xml(find_block(doc, block_id))
     _assert_only_text_changed(snapshot, block_id, xml, patches)
     return xml
 

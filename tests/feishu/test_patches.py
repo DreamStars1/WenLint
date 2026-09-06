@@ -34,6 +34,7 @@ def _manifest_dict(**overrides):
         "document_id": "DocToken",
         "section_locator": "标题[1]",
         "initial_fingerprint": "sha256:placeholder",
+        "base_revision": 4,
         "approved_patch_ids": ["p1"],
         "expected_fingerprints": ["sha256:after"],
         "patches": [
@@ -90,6 +91,7 @@ def test_overlapping_patches_are_rejected(snapshot):
         document_id="DocToken",
         section_locator="标题[1]",
         initial_fingerprint=snapshot.sections[0].fingerprint,
+        base_revision=4,
         approved_patch_ids=("p1", "p2"),
         expected_fingerprints=("a",),
         patches=(
@@ -131,6 +133,7 @@ def test_empty_or_equal_before_after_rejected(snapshot):
         document_id="DocToken",
         section_locator="标题[1]",
         initial_fingerprint=snapshot.sections[0].fingerprint,
+        base_revision=4,
         approved_patch_ids=("p1",),
         expected_fingerprints=("a",),
         patches=(

@@ -70,6 +70,7 @@ def _plan_for(xml: str, revision: int = 10) -> ApprovedSectionPlan:
         document_id="DocToken",
         section_locator=section.locator,
         initial_fingerprint=section.fingerprint,
+        base_revision=revision,
         approved_patch_ids=tuple(p.patch_id for p in patches),
         expected_fingerprints=tuple(expected),
         patches=tuple(patches),

@@ -179,6 +179,7 @@ class ApprovedSectionPlan:
         document_id: Actual Docx id the manifest targets.
         section_locator: Structural locator of the approved chapter.
         initial_fingerprint: Fingerprint observed when the user approved.
+        base_revision: Document revision observed when the user approved.
         approved_patch_ids: Patch ids explicitly approved for this chapter.
         expected_fingerprints: Per-block-write expected fingerprints in order.
         patches: Full patch payloads validated with the manifest.
@@ -187,6 +188,7 @@ class ApprovedSectionPlan:
     document_id: str
     section_locator: str
     initial_fingerprint: str
+    base_revision: int
     approved_patch_ids: tuple[str, ...]
     expected_fingerprints: tuple[str, ...]
     patches: tuple[Patch, ...] = ()

@@ -26,6 +26,7 @@ _TERMINATE_GRACE_SECONDS = 1.0
 _PROBE_FETCH_NEEDLES = (
     "docs",
     "+fetch",
+    "--doc",
     "--doc-format",
     "xml",
     "--detail",
@@ -33,15 +34,21 @@ _PROBE_FETCH_NEEDLES = (
     "--as",
     "user",
     "--format",
+    "json",
 )
 _PROBE_UPDATE_NEEDLES = (
     "docs",
     "+update",
     "block_replace",
+    "--block-id",
+    "--content",
+    "--doc-format",
+    "xml",
     "--revision-id",
     "--as",
     "user",
     "--format",
+    "json",
 )
 
 
@@ -143,11 +150,6 @@ class LarkClient:
         for needle in _PROBE_UPDATE_NEEDLES:
             if needle not in update_help:
                 missing.append(f"update:{needle}")
-        if "wiki" not in fetch_help.lower() and "/wiki/" not in fetch_help.lower():
-            # Capability gate prefers explicit wiki mention; tolerate docs that
-            # document URL forms without the literal word when +fetch exists.
-            if "wiki" not in version.lower():
-                missing.append("fetch:wiki")
         if missing:
             raise LarkCliError(
                 "incompatible_cli",

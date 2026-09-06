@@ -146,6 +146,23 @@ def main(argv: list[str] | None = None) -> int:
         state_path = os.environ.get("FAKE_LARK_STATE")
         if state_path and Path(state_path).is_file():
             state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+            fetch_count = int(state.get("fetch_count", 0)) + 1
+            state["fetch_count"] = fetch_count
+            Path(state_path).write_text(json.dumps(state), encoding="utf-8")
+            fail_after = state.get("fail_fetch_after")
+            if fail_after is not None and fetch_count > int(fail_after):
+                sys.stdout.write(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": {
+                                "type": "network",
+                                "message": "scripted fetch network failure",
+                            },
+                        }
+                    )
+                )
+                return 0
             payload = {
                 "ok": True,
                 "data": {

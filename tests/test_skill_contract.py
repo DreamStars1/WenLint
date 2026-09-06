@@ -13,6 +13,14 @@ def test_feishu_skill_requires_chapter_approval():
         assert phrase in ref
 
 
+def test_dependency_recovery_commands_are_explicit_and_manual():
+    text = Path("references/feishu.md").read_text(encoding="utf-8")
+    assert "pipx install wenlint" in text
+    assert "lark-cli auth login" in text
+    assert "禁止" in text and "静默" in text
+    assert "扩大 OAuth scope" in text or "扩大 scope" in text or "OAuth scope" in text
+
+
 def test_read_only_and_write_safety_rules_are_documented():
     text = Path("references/feishu.md").read_text(encoding="utf-8")
     for phrase in ["KEEP", "REWRITE", "VERIFY", "ASK", "--as user", "block_replace"]:

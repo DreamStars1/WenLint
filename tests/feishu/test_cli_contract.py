@@ -136,6 +136,7 @@ def test_apply_success_with_stateful_fake(tmp_path):
         "document_id": "DocToken",
         "section_locator": section.locator,
         "initial_fingerprint": section.fingerprint,
+        "base_revision": 12,
         "approved_patch_ids": ["p1"],
         "expected_fingerprints": [expected_fp],
         "patches": [
@@ -188,6 +189,7 @@ def test_apply_conflict_before_write_exit_4(tmp_path):
         "document_id": "DocToken",
         "section_locator": section.locator,
         "initial_fingerprint": "sha256:stale",
+        "base_revision": 12,
         "approved_patch_ids": ["p1"],
         "expected_fingerprints": ["sha256:x"],
         "patches": [

@@ -6,11 +6,10 @@ emit structured JSON. This module never calls document update APIs.
 
 from __future__ import annotations
 
-import dataclasses
 from collections.abc import Mapping
 from typing import Any
 
-from wenlint.feishu.document import DocumentRefError, parse_document_ref
+from wenlint.feishu.document import DocumentRefError, resolve_fetched_docx_ref
 from wenlint.feishu.findings import bind_findings
 from wenlint.feishu.lark import LarkCliError, LarkClient
 from wenlint.feishu.models import DocumentRef, InspectionReport
@@ -76,11 +75,14 @@ def inspect_document(
             retryable=False,
         )
 
-    resolved = dataclasses.replace(
-        ref,
-        document_id=document_id,
-        canonical_url=canonical_url.split("?", 1)[0],
-    )
+    try:
+        resolved = resolve_fetched_docx_ref(ref, document_id, canonical_url)
+    except DocumentRefError as exc:
+        raise LarkCliError(
+            getattr(exc, "kind", "unresolved_document"),
+            str(exc),
+            retryable=False,
+        ) from exc
     revision_id = int(document["revision_id"])
     snapshot = project_xml(content, resolved, revision_id)
     raw_findings = scan_text(snapshot.projection, profile=profile)

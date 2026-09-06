@@ -8,14 +8,13 @@ I/O, scanning, and patch application live in sibling modules so local
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
 import sys
 from pathlib import Path
 from typing import Sequence
 
 from wenlint import __version__
-from wenlint.feishu.document import DocumentRefError, parse_document_ref
+from wenlint.feishu.document import DocumentRefError, parse_document_ref, resolve_fetched_docx_ref
 from wenlint.feishu.inspection import inspect_document
 from wenlint.feishu.lark import LarkCliError, LarkClient
 from wenlint.feishu.patches import (
@@ -79,11 +78,7 @@ def _cmd_apply(args: argparse.Namespace) -> int:
                 "fetch response did not resolve a Docx document id and URL",
                 retryable=False,
             )
-        resolved = dataclasses.replace(
-            ref,
-            document_id=str(document_id),
-            canonical_url=str(url).split("?", 1)[0],
-        )
+        resolved = resolve_fetched_docx_ref(ref, str(document_id), str(url))
         plan = load_manifest(Path(args.patch_file), resolved)
         result = apply_approved_section(client, resolved, plan)
     except DocumentRefError as exc:
