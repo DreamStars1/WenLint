@@ -16,11 +16,11 @@ description: 中文散文坏味检查器——jieba 分词+词表规则，检测
 
 ## 执行原则（先查找，后询问）
 
-用户要求检查/修复但没指明具体文件时，按顺序自行定位，**不要直接问"检查哪个文件"**：
+用户没指明具体文件时，按顺序自行定位，不要问"检查哪个文件"：
 1. 工作区/家目录最近的 .md 文档（~ 文档、PRD、论文调研、当前工作目录）
-2. 代码库内的 markdown（README、docs、AGENTS.md 等，可用 search_files 找含 AI 腔词的文件）
-3. 网络内容（用户给了 URL，或能用 web 搜索定位到的文档/网页/知识——用户提到某篇网上文章、标准、帖子时先自己搜来查）
-4. 以上都定位不到或歧义大（多个候选不知选哪个）才询问用户
+2. 代码库内 markdown（README/docs/AGENTS.md；用 search_files 找含 AI 腔词的文件）
+3. 网络内容：用户给 URL，或能 web 搜索定位的文档/知识（提到某文章/标准先自己搜）
+4. 定位不到或歧义大（多个候选）才询问用户
 
 默认用 review 模式（只报告不改文件）；用户明确要改时用 --fix / --fix --apply。
 
@@ -53,16 +53,16 @@ python <skill_dir>/scripts/zh_prose_smell.py 文档.md --fix --apply
 1. **review（默认）**：只检查报告，不改文件
 2. **fix（--fix）**：自动修复后输出 diff；`--apply` 写盘（自动备份 .bak）
    - 自动改：AI 腔引导词（词后接逗号/句读/行尾时）+ 中文相邻重复词
-   - 不自动改（fix 后列出待人工/LLM）：定语结构（"综上所述的方案"）、模糊词、强调词、超长句
+   - 不自动改（fix 后列出待人工/LLM）：定语结构（`综上所述的方案`）、模糊词、强调词、超长句
 
 ## 检测类别
 
 | 类别 | 级别 | 抓什么 |
 |---|---|---|
-| AI味/废话填充 | warning | 总而言之、综上所述、值得注意的是、众所周知、赋能、抓手、闭环、颗粒度…（AI_CLICHE 词表） |
-| 模糊词 | warning | 大概、好像、似乎、也许、或许、差不多、一定程度…（FUZZY_WORDS） |
-| 空洞强调词 | suggestion | 非常、十分、极其、超级、真的、简直…（EMPTY_EMPHASIS） |
-| 重复用词 | warning | jieba 词级相邻重复（"真的真的"） |
+| AI味/废话填充 | warning | `总而言之、综上所述、值得注意的是、众所周知、赋能、抓手、闭环、颗粒度…`（AI_CLICHE 词表） |
+| 模糊词 | warning | `大概、好像、似乎、也许、或许、差不多、一定程度…`（FUZZY_WORDS） |
+| 空洞强调词 | suggestion | `非常、十分、极其、超级、真的、简直…`（EMPTY_EMPHASIS） |
+| 重复用词 | warning | jieba 词级相邻重复（`真的真的`） |
 | 超长句 | suggestion | 单句 >60 字无断句 |
 
 ## Markdown 智能
@@ -75,7 +75,8 @@ python <skill_dir>/scripts/zh_prose_smell.py 文档.md --fix --apply
 
 ## 自定义词表
 
-编辑脚本顶部 5 个列表（AI_CLICHE / FUZZY_WORDS / EMPTY_EMPHASIS / REDUNDANT / AI_HALLUCINATION_HEDGE）：
+编辑脚本顶部的 5 个词表列表：
+`AI_CLICHE / FUZZY_WORDS / EMPTY_EMPHASIS / REDUNDANT / AI_HALLUCINATION_HEDGE`
 - ≤4 字词：jieba 词级精确匹配
 - >4 字短语：原文子串匹配（兜底）
 把用户不喜欢的词/表达加进去即可，零门槛。

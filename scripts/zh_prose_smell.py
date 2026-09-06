@@ -219,11 +219,13 @@ def scan_file(fp):
     text = strip_code_blocks(text)
     lines = text.split("\n")
     hits = []
+    cleaned_lines = []
     for i, line in enumerate(lines, 1):
         clean = clean_inline_markup(line)
+        cleaned_lines.append(clean)
         hits += check_words(clean, i)
         hits += check_repetition(clean, i)
-    hits += check_long_sentence(text)
+    hits += check_long_sentence("\n".join(cleaned_lines))
     hits.sort()
     return fp, hits
 
