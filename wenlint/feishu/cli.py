@@ -16,7 +16,11 @@ from wenlint import __version__
 from wenlint.feishu.document import DocumentRefError, parse_document_ref
 from wenlint.feishu.inspection import inspect_document
 from wenlint.feishu.lark import LarkCliError, LarkClient
+from wenlint.feishu.patches import ManifestError, PatchValidationError, apply_approved_section, load_manifest
 from wenlint.feishu.projection import XmlSafetyError
+from wenlint.feishu.sections import SectionError
+from pathlib import Path
+import dataclasses
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -30,11 +34,60 @@ def main(argv: list[str] | None = None) -> int:
         Process exit code from the Feishu CLI contract.
     """
     args = _parse_args(argv)
-    if args.command == "inspect" or getattr(args, "url", None) is not None:
-        return _cmd_inspect(args)
     if args.command == "apply":
-        return _not_implemented("apply")
+        return _cmd_apply(args)
+    if args.command == "inspect":
+        return _cmd_inspect(args)
     return _emit_error("invalid_input", "unknown command", retryable=False, exit_code=2)
+
+
+def _cmd_apply(args: argparse.Namespace) -> int:
+    """Apply an approved section patch manifest with fail-closed writeback.
+
+    Args:
+        args: Parsed arguments containing ``url`` and ``patch_file``.
+
+    Returns:
+        Exit code 0/2/3/4/5 per the Feishu CLI contract.
+    """
+    try:
+        ref = parse_document_ref(args.url)
+        client = LarkClient()
+        # Resolve document identity before comparing the manifest document_id.
+        payload = client.fetch(ref)
+        document = payload["data"]["document"]  # type: ignore[index]
+        resolved = dataclasses.replace(
+            ref,
+            document_id=str(document["document_id"]),
+            canonical_url=str(document["url"]).split("?", 1)[0],
+        )
+        plan = load_manifest(Path(args.patch_file), resolved)
+        result = apply_approved_section(client, resolved, plan)
+    except DocumentRefError as exc:
+        return _emit_error(exc.kind, str(exc), retryable=False, exit_code=2)
+    except ManifestError as exc:
+        return _emit_error(exc.kind, str(exc), retryable=False, exit_code=2)
+    except PatchValidationError as exc:
+        return _emit_error(exc.kind, str(exc), retryable=False, exit_code=2)
+    except SectionError as exc:
+        return _emit_error(exc.kind, str(exc), retryable=False, exit_code=4)
+    except XmlSafetyError as exc:
+        return _emit_error(exc.kind, str(exc), retryable=False, exit_code=2)
+    except LarkCliError as exc:
+        return _emit_error(
+            exc.kind,
+            exc.message,
+            retryable=exc.retryable,
+            exit_code=3,
+            details=exc.details,
+        )
+
+    print(json.dumps(result.to_dict(), ensure_ascii=False))
+    if result.status == "success":
+        return 0
+    if result.status == "conflict":
+        return 4
+    return 5
 
 
 def _cmd_inspect(args: argparse.Namespace) -> int:
