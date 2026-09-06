@@ -166,8 +166,9 @@ wenlint/
 class DocumentRef:
     input_url: str
     kind: Literal["docx", "wiki"]
-    document_id: str
-    canonical_url: str
+    input_token: str
+    document_id: str | None
+    canonical_url: str | None
 
 @dataclass(frozen=True)
 class SourceSpan:
@@ -217,7 +218,22 @@ class ApprovedSectionPlan:
     expected_fingerprints: tuple[str, ...]
 ```
 
-实现可以增加字段，但不得削弱精确定位、原文比较、章节 fingerprint 或用户批准状态。
+解析 URL 时，`document_id` 和 `canonical_url` 可以尚未解析。首次 fetch 必须返回一个新 `DocumentRef`，其中这两个字段均为非空的实际 Docx 值；`DocumentSnapshot` 和所有写操作只接受已解析引用。实现可以增加字段，但不得削弱精确定位、原文比较、章节 fingerprint 或用户批准状态。
+
+### 8.1 Python 注释与 docstring 规范
+
+本版本新增或实质修改的 Python 模块、类、函数和方法使用 Google Style docstring：
+
+- 模块 docstring 说明职责和边界，不复述文件名；
+- 公共类、函数和方法必须有 docstring；私有函数在行为、约束或失败语义不直观时也必须有 docstring；
+- 按实际签名使用 `Args:`、`Returns:`、`Raises:`、`Yields:` 和 `Attributes:`，无对应内容时不保留空章节；
+- 首行使用祈使语气概述行为，复杂契约在空行后的段落说明；
+- 行内注释解释安全原因、协议限制或不明显的设计取舍，不逐句翻译代码；
+- dataclass 字段含义不能从类型和字段名直接判断时，在类 docstring 的 `Attributes:` 中说明；
+- 测试函数可以省略 docstring，但测试名必须表达场景和预期结果；
+- 所有 docstring 和注释必须与实际退出码、超时、大小限制、并发语义和失败关闭行为一致。
+
+验收时对 `wenlint/feishu/`、修改过的现有 Python 文件和新增测试 helper 做人工 docstring 审查。缺失、过时或仅复述代码的注释视为验收失败。
 
 ## 9. `lark-cli` 契约
 
@@ -618,6 +634,7 @@ OpenAI Plugin/MCP 可作为未来面向更广泛用户的封装，负责统一�
 - Python 3.11、3.13、3.14 CI 全部通过；
 - wheel/sdist 在干净环境安装，两个 console script 可运行；
 - 包元数据无未声明运行时依赖；
+- 新增和实质修改的 Python 生产代码符合第 8.1 节 Google Style docstring 与注释规范；
 - `npx skills` 能发现和安装 WenLint Skill，引用文件完整；
 - Skill 中命令与 README、CLI `--help` 一致。
 
@@ -640,6 +657,7 @@ Live E2E 使用专门的临时飞书测试文档和人工授权，不进入无�
 - 最终回读与重扫通过后才声称修改成功；
 - Python 包可从 PyPI/pipx 安装，Skill 可由 GitHub/`npx skills` 安装；
 - 安装 Skill 不会被误描述为已经安装 Python 或 `lark-cli`；
+- Python 生产代码的 Google Style docstring 完整、准确且不复述实现；
 - 临时正文和 patch 数据被清理，日志不泄露正文或凭证。
 
 ## 22. 实施顺序
