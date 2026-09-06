@@ -1,14 +1,24 @@
 # zh-prose-smell：中文散文坏味检查器
 
-基于 vale 的 "prose lint" 思路，但针对中文重新实现：**jieba 分词 + 词表规则**。
-（vale 的分词按空格，中文句子会被当整块 token 导致句内词漏检——实测 vale 只命中句首词。jieba 版全量命中。）
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+把"代码异味"检测思路搬到中文散文：**jieba 分词 + 词表规则**，快速、免费、确定性揪出写作中的高频毛病（AI 腔、模糊词、空洞强调、重复词、超长句）。
+
+基于 vale 的 "prose lint" 思路，但针对中文重新实现——vale 按空格分词，中文句子会被当整块 token 导致句内词漏检（实测只命中句首词），jieba 版全量命中。
+
+## 安装
+
+```bash
+pip install jieba        # 唯一依赖
+
+# 作为 CLI 使用
+git clone <本仓库> zh-prose-smell
+# 或作为 Hermes skill：把整个仓库放入 ~/.hermes/skills/productivity/zh-prose-smell/
+```
 
 ## 用法
 
 ```bash
-# 安装依赖（仅 jieba）
-pip install jieba
-
 # 模式一：review（只检查，默认）
 python scripts/zh_prose_smell.py 文档.md
 python scripts/zh_prose_smell.py 论文调研目录/
@@ -83,3 +93,19 @@ EMPTY_EMPHASIS = ["非常", ...]                     # 空洞强调
   - 词表可解释、可审计、可扩展——正是 vale 哲学与代码坏味研究交叉的地方。
 - **层级定位**：本工具 = 确定性浅层检测器（等价 Checkstyle 之于代码坏味）；
   - 语义级坏味（结构性啰嗦、逻辑跳跃）留给 LLM 精判——可做两段式。
+
+## 仓库结构
+
+```
+zh-prose-smell/
+├── SKILL.md                # Hermes skill 定义（触发条件/执行原则/用法）
+├── scripts/
+│   └── zh_prose_smell.py   # 主脚本（词表 + 检测 + 修复逻辑都在此）
+├── test/                   # 测试样例（markup 陷阱、fix 用例）
+├── LICENSE                 # MIT
+└── README.md
+```
+
+## 许可证
+
+[MIT](LICENSE) © 2026 starlu（星露）。自由使用、修改、分发，保留版权声明即可。
