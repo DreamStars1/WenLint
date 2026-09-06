@@ -16,8 +16,7 @@ prd.md:76:1      S001  suggestion  超长句         94 chars
 ## 安装
 
 ```bash
-pip install jieba            # 运行时依赖（可选，部分规则用）
-pip install -e .             # 本地安装，获得 wenlint 命令
+pip install -e .             # 本地安装，获得 wenlint 命令（仅标准库依赖）
 # 或直接运行： python -m wenlint <path>
 ```
 
@@ -31,8 +30,8 @@ wenlint . --fail-level warning      # CI：有 >= warning 时 exit 1
 wenlint 文档.md --json              # 结构化输出（供 Skill/LLM 消费）
 ```
 
-**WenLint 不修改正文**——v0.1 核心定案：它只做"发现"
-（定位 + 规则 ID + 命中文本 + 上下文 + review_hint），
+**WenLint 不修改正文**——v0.1 核心定案：只做"发现"。
+发现结果 = 定位 + 规则 ID + 命中文本 + 上下文 + review_hint；
 判断/查证/改写全部交给 Skill 的 LLM（见下"职责划分"）。
 
 ## 规则
@@ -71,8 +70,10 @@ wenlint 文档.md --json              # 结构化输出（供 Skill/LLM 消费�
 ## Markdown 智能与位置精确
 
 - 等长 mask（内容替换为等长空格）→ **行号列号与原文一一对应**，front matter 存在也不错位
-- 自动跳过：代码块、行内代码、图片、HTML、注释、表格行、标题行
-- 链接：URL 不查，**链接文字照查**
+- 自动跳过：标题行、表格行、代码块（围栏/缩进）、行内代码、HTML 标签与注释（含多行）、图片、front matter
+- 链接：URL 不查，**链接文字照查（列号精确，不偏移）**
+- **引号与括号内正文照常检查**——元语境（示例词/引述）由语义层判 KEEP，不由规则层静默放过
+- 词规则只在正文行执行（段落/列表/引用块）；目录扫描自动跳过 .git/.venv/node_modules/build 等
 
 ## 职责划分（v0.1 定案）
 
@@ -133,7 +134,7 @@ ASK      资料也不足，需要作者确认（绝不在无依据时删"可能"
 
 ```bash
 pip install pytest
-python -m pytest tests/     # 22 个回归测试（mask/行号/fix 安全/CLI）
+python -m pytest tests/     # 26 个回归测试（mask/行号/scope 行为/CLI）
 ```
 
 ## 仓库结构

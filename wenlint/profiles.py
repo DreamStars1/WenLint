@@ -16,7 +16,7 @@ PROFILES = {
     "product": {"disable": [], "severity_override": {},
                 "params": {"S001": {"max_len": 80}}},
     "formal": {"disable": [], "severity_override": {
-        "H001": "warning", "E001": "warning", "C002": "error",
+        "H001": "warning", "E001": "warning",
     }, "params": {"S001": {"max_len": 80}}},
     # SKILL.md 指令文档：简单指令应该短句，50 字——长句说明已违反"指令要直接"
     "instruction": {"disable": [], "severity_override": {},

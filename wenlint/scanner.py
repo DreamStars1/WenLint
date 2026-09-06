@@ -66,13 +66,11 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
         list[dict]，每条含 line/col/rule_id/severity/category/match/message。
 
     Notes:
-        - 语言守卫：中文字符占比 <5% 视为非中文文件，直接返回空。
+        - 无文件级语言守卫：英文文件的中文片段照常检查（行级 S001 守卫已够）。
         - semantic 规则（C002/H002/H003）命中降级为 candidate，不阻断 CI。
-        - S001 仅对散文段落行判句长（vale scope 借鉴），剥 markdown 标记。
+        - S001 聚合连续散文段落判句长；词规则只在正文行执行
+          （跳过 heading/table/fence——结构行不是散文）。
     """
-    if _cn_ratio(text) < 0.05:
-        return []
-
     # A900 文件级规则：SKILL.md 主文件过大（God File 坏味）
     if filename.endswith("SKILL.md"):
         rule = by_id("A900")
@@ -95,8 +93,11 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
     params = prof.get("params", {})
 
     findings = []
-    masked = mask_text(text, protect_quotes=True).split("\n")
+    masked = mask_text(text).split("\n")
     raw_lines = text.split("\n")
+
+    # 正文行角色：词规则只在这些行执行（heading/table/fence 是结构非散文）
+    PROSE_ROLES = ("paragraph", "list_item", "blockquote")
 
     for rule in RULES:
         rid = rule["id"]
@@ -108,29 +109,28 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
             severity = "candidate"   # 语义候选：不阻断 CI，交 LLM/人工裁决
         rpats, rblock = _COMPILED[rid]
 
-        if rid == "S001":   # 超长句：scope=paragraph（vale 借鉴）——只判散文段落行，
-            # 列表项/导航/标题/表格是结构不是句子；同时剥掉 ** 等标记符号再计数
+        if rid == "S001":   # 超长句：聚合连续散文段落后按句读判长
+            # （vale scope 借鉴；剥 ** 等标记；修复 markdown 手动换行漏报）
             max_len = params.get("S001", {}).get("max_len", rule.get("max_len", 80))
-            for ln, (mline, raw) in enumerate(zip(masked, raw_lines), 1):
-                if line_role(raw) != "paragraph":
-                    continue
-                # 剥粗体/强调标记（**、__、*、_）后计数——标记不是句子内容
-                clean = re.sub(r"\*\*|__|\*|_|`", "", mline.strip())
+            paras = _collect_paragraphs(masked, raw_lines)
+            for start_ln, para in paras:
+                clean = re.sub(r"\*\*|__|\*|_|`", "", para)
                 for seg in re.split(r"(?<=[。！？!?；;])", clean):
                     seg = seg.strip()
-                    # 语言守卫：中文字符占比 <30% 的行（英文/代码/URL 行）不判长句
                     if len(seg) > max_len and _cn_ratio(seg) >= 0.30:
                         findings.append({
-                            "line": ln, "col": 1, "rule_id": rid,
+                            "line": start_ln, "col": 1, "rule_id": rid,
                             "severity": severity, "category": rule["category"],
                             "match": "", "message": rule["message"].format(
                                 len=len(seg), max=max_len),
                         })
             continue
 
-        if rid == "D001":   # 相邻重复（jieba 词级，简化：中文 2-8 字连续重复）
+        if rid == "D001":   # 相邻重复（中文 2-8 字连续重复）
             dup_re = re.compile(r"([\u4e00-\u9fff]{2,8})\1")
-            for ln, mline in enumerate(masked, 1):
+            for ln, (mline, raw) in enumerate(zip(masked, raw_lines), 1):
+                if line_role(raw) not in PROSE_ROLES:
+                    continue
                 for m in dup_re.finditer(mline):
                     findings.append({
                         "line": ln, "col": m.start() + 1, "rule_id": rid,
@@ -140,8 +140,10 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
                     })
             continue
 
-        # 通用词/正则规则
+        # 通用词/正则规则（只在正文行执行）
         for ln, (mline, raw) in enumerate(zip(masked, raw_lines), 1):
+            if line_role(raw) not in PROSE_ROLES:
+                continue
             for pat in rpats:
                 for m in pat.finditer(mline):
                     if m.start() >= len(mline):
@@ -151,20 +153,20 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
                         continue
                     if rblock and rblock.search(raw[max(0, m.start() - 10): m.end() + 10]):
                         continue
-                    w = matched
                     findings.append({
                         "line": ln, "col": m.start() + 1, "rule_id": rid,
                         "severity": severity, "category": rule["category"],
-                        "match": w,
-                        "message": rule["message"].format(w=w, len=0, max=0),
+                        "match": matched,
+                        "message": rule["message"].format(w=matched, len=0, max=0),
                     })
 
     findings += findings_900
 
-    # 同句同规则合并：同一行同一规则多次命中只保留第一条（如"处置闭环/反馈闭环"）
+    # span 级去重（同 line+col+rule 完全相同才去）：
+    # 不合并同规则多次命中（"大概…好像…"各自保留，语义层逐条处理）
     seen, merged = set(), []
     for f in findings:
-        key = (f["line"], f["rule_id"])
+        key = (f["line"], f["col"], f["rule_id"])
         if key in seen:
             continue
         seen.add(key)
@@ -183,6 +185,35 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
 
     findings.sort(key=lambda f: (f["line"], f["col"]))
     return findings
+
+
+def _collect_paragraphs(masked_lines, raw_lines):
+    """聚合连续散文段落行为段落（修复 markdown 手动换行的跨行长句漏报）。
+
+    Markdown 中一个段落可被手动换行拆成多行；若逐行判句长，
+    拆行后每段都 < 阈值就会漏报。这里把连续 paragraph 行拼接后统一切句。
+
+    Args:
+        masked_lines: mask 后各行。
+        raw_lines: 原文各行（用于 line_role 判定）。
+
+    Returns:
+        list[tuple[int, str]]：[(段落起始行号 1-based, 拼接后的段落文本)]。
+    """
+    paras = []
+    start_ln, buf = 0, ""
+    for ln, (mline, raw) in enumerate(zip(masked_lines, raw_lines), 1):
+        if line_role(raw) == "paragraph" and mline.strip():
+            if not buf:
+                start_ln = ln
+            buf += mline.strip()
+        else:
+            if buf:
+                paras.append((start_ln, buf))
+                start_ln, buf = 0, ""
+    if buf:
+        paras.append((start_ln, buf))
+    return paras
 
 
 def _extract_sentence(line, col):

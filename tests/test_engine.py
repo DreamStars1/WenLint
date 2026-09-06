@@ -44,11 +44,12 @@ def test_url_masked_but_link_text_checked():
     assert hits[0][2] == "H001"  # 只有链接文字里的"大概"，URL 里的不报
 
 
-def test_quote_content_protected_in_review():
+def test_quote_content_checked_in_review():
+    """引号内正文照常检查（元语境示例词由语义层判 KEEP，规则层不静默放过）"""
     text = "我把“总而言之”当例子，但 总而言之 是真的套话。\n"
     hits = f(text)
     c001 = [h for h in hits if h[2] == "C001"]
-    assert len(c001) == 1  # 只有引号外那个
+    assert len(c001) == 2, "引号内外的套话都该报（共 2 处）"
 
 
 def test_duplicate_word_col_precise():
@@ -101,3 +102,72 @@ def test_s001_bold_markers_not_counted():
     from wenlint.profiles import PROFILES
     hits = scan_text(text, profile="instruction", filename="SKILL.md")
     assert not [h for h in hits if h["rule_id"] == "S001"], "粗体标记不应计入句长"
+
+
+# ===== 审查 P0 回归：Markdown scope 行为 =====
+
+def test_heading_not_reported():
+    """标题行是结构不是散文，套话词不报"""
+    text = "# 总而言之，这是标题\n\n正文没有套话。\n"
+    hits = f(text)
+    assert not [h for h in hits if h[2] == "C001"], "heading 行不应报词规则"
+
+
+def test_fenced_code_not_reported():
+    """代码块内的词不报"""
+    text = "正文。\n```\n总而言之 在代码里\n```\n正文二。\n"
+    hits = f(text)
+    assert not [h for h in hits if h[2] == "C001"]
+
+
+def test_indented_code_not_reported():
+    """四空格缩进代码块内的词不报"""
+    text = "正文。\n\n    总而言之 缩进代码\n\n正文二。\n"
+    hits = f(text)
+    assert not [h for h in hits if h[2] == "C001"]
+
+
+def test_multi_line_html_comment_not_reported():
+    """多行 HTML 注释内容不报"""
+    text = "正文。\n<!--\n总而言之 在注释里\n可能 也在\n-->\n正文二。\n"
+    hits = f(text)
+    assert not [h for h in hits if h[2] == "C001"]
+    assert not [h for h in hits if h[2] == "H002"]
+
+
+def test_paren_content_checked():
+    """括号内正文照常检查（不再静默保护）"""
+    text = "（这个方案可能有问题）\n"
+    hits = f(text)
+    assert any(h[2] == "H002" for h in hits), "括号内正文应被检查"
+
+
+def test_link_col_not_shifted():
+    """链接文字列号精确：文字不被 [ 前移"""
+    text = "[文字大概](https://example.com)\n"
+    hits = f(text)
+    h001 = [h for h in hits if h[2] == "H001"]
+    assert h001 and h001[0][1] == 4, f"大概应从第 4 列开始，实际 {h001[0][1] if h001 else None}"
+
+
+def test_same_rule_two_hits_both_kept():
+    """同规则同句两处命中都保留（不按行合并吞命中）"""
+    text = "这个大概正确。另一个好像错误。\n"
+    hits = f(text)
+    h001 = [h for h in hits if h[2] == "H001"]
+    assert len(h001) == 2, f"大概+好像都应报，实际 {len(h001)}"
+
+
+def test_cliche_attributive_not_reported():
+    """C001 定语结构（综上所述的方案）不报 warning"""
+    text = "综上所述的方案需要人工判断。\n"
+    hits = f(text)
+    assert not [h for h in hits if h[2] == "C001"], "定语结构套话不报"
+
+
+def test_english_text_with_chinese_segment():
+    """英文为主的文本中的中文片段仍被检查（无文件级语言守卫）"""
+    text = ("This is an English README paragraph that is fairly long and contains "
+            "technical terms. 总而言之，这里有中文套话。\n")
+    hits = f(text)
+    assert any(h[2] == "C001" for h in hits), "英文文件中的中文段应被检查"

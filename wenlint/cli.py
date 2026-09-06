@@ -97,18 +97,25 @@ def _effective_profile(fp, requested):
 def _collect_files(paths):
     """收集待检查文件（多路径输入展开）。
 
+    跳过常见非源码目录与隐藏目录：.git/.venv/node_modules/build/dist/
+    __pycache__/.pytest_cache/tests 的 fixture 目录等。
+
     Args:
         paths: 文件或目录路径列表。
 
     Returns:
         list[str]：排序去重后的文件路径（.md/.txt/.rst/.markdown）。
     """
+    SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "build", "dist",
+                 "__pycache__", ".pytest_cache", ".archive", "templates"}
     files = []
     for p in paths:
         if os.path.isfile(p):
             files.append(p)
         else:
-            for root, _, fs in os.walk(p):
+            for root, dirs, fs in os.walk(p):
+                dirs[:] = [d for d in dirs if d not in SKIP_DIRS
+                           and not d.startswith(".")]
                 files += [os.path.join(root, f) for f in fs
                           if f.endswith(DOC_EXTS)]
     return sorted(set(files))
@@ -121,14 +128,14 @@ def _load_texts(files):
         files: 文件路径列表。
 
     Returns:
-        dict[str, str]：{fp: text}；不可读文件跳过并输出告警。
+        dict[str, str]：{fp: text}；不可读/非 UTF-8 文件跳过并输出告警。
     """
     texts = {}
     for fp in files:
         try:
             with open(fp, encoding="utf-8") as fh:
                 texts[fp] = fh.read()
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
             print(f"!! 无法读取 {fp}: {e}", file=sys.stderr)
     return texts
 
