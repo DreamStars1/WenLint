@@ -311,7 +311,7 @@ class LarkClient:
         if isinstance(error, Mapping):
             err_type = str(error.get("type") or error.get("code") or "protocol_error")
             kind = err_type
-            message = str(error.get("message") or message)
+            message = _safe_error_message(kind, error.get("message"))
             if "hint" in error:
                 details["hint"] = error["hint"]
             if "missing_scopes" in error:
@@ -493,6 +493,30 @@ def _terminate(proc: subprocess.Popen[bytes]) -> None:
         proc.wait(timeout=_TERMINATE_GRACE_SECONDS)
 
 
+def _safe_error_message(kind: str, raw: object) -> str:
+    """Return a compact error message that never echoes document bodies.
+
+    Args:
+        kind: Stable error classifier.
+        raw: Untrusted remote ``error.message`` value.
+
+    Returns:
+        A short safe message suitable for stderr JSON.
+    """
+    fallback = f"lark-cli reported {kind}"
+    if not isinstance(raw, str) or not raw.strip():
+        return fallback
+    text = raw.strip()
+    if len(text) > 160:
+        return fallback
+    lowered = text.lower()
+    if "<" in text or ">" in text or "http://" in lowered or "https://" in lowered:
+        return fallback
+    if any(marker in text for marker in ("block-id", "<p", "<h1", "<?xml", "{")):
+        return fallback
+    return text
+
+
 def _sanitized_env() -> dict[str, str]:
     """Build a minimal environment for child processes.
 
@@ -513,6 +537,7 @@ def _sanitized_env() -> dict[str, str]:
         "FAKE_LARK_VERSION",
         "FAKE_LARK_SLEEP",
         "FAKE_LARK_STATE",
+        "FAKE_LARK_LEAK",
         "WENLINT_LARK_CLI",
     }
     env = {key: value for key, value in os.environ.items() if key in allowed}

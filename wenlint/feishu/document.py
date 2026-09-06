@@ -12,6 +12,20 @@ from urllib.parse import urlsplit
 from wenlint.feishu.models import DocumentRef
 
 _SUPPORTED_KINDS = {"docx", "wiki"}
+_ALLOWED_HOST_SUFFIXES = (
+    ".feishu.cn",
+    ".feishu.com",
+    ".larksuite.com",
+    ".lark.com",
+    ".lark.cn",
+)
+_ALLOWED_HOSTS = {
+    "feishu.cn",
+    "feishu.com",
+    "larksuite.com",
+    "lark.com",
+    "lark.cn",
+}
 
 
 class DocumentRefError(ValueError):
@@ -55,6 +69,11 @@ def parse_document_ref(raw: str) -> DocumentRef:
         raise DocumentRefError("document URLs must not include credentials")
     if not parts.hostname:
         raise DocumentRefError("document URL is missing a host")
+    host = parts.hostname.lower().rstrip(".")
+    if host not in _ALLOWED_HOSTS and not any(
+        host.endswith(suffix) for suffix in _ALLOWED_HOST_SUFFIXES
+    ):
+        raise DocumentRefError("only Feishu/Lark document hosts are supported")
 
     path = parts.path or ""
     segments = [segment for segment in path.split("/") if segment]

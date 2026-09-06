@@ -98,16 +98,16 @@ def test_apply_success_with_stateful_fake(tmp_path):
     )
     snapshot = project_xml(xml, ref, 12)
     section = snapshot.sections[0]
-    before = "普通正文可能含糊。"
-    after = "普通正文已经明确。"
+    before = "可能"
+    after = "已经"
     patch = Patch(
         patch_id="p1",
         section_locator=section.locator,
         section_fingerprint=section.fingerprint,
         block_id="blkParagraph",
         node_path=(),
-        source_start=0,
-        source_end=len(before),
+        source_start=4,
+        source_end=6,
         before=before,
         after=after,
         rule_id="H002",
@@ -146,8 +146,8 @@ def test_apply_success_with_stateful_fake(tmp_path):
                 "section_fingerprint": section.fingerprint,
                 "block_id": "blkParagraph",
                 "node_path": [],
-                "source_start": 0,
-                "source_end": len(before),
+                "source_start": 4,
+                "source_end": 6,
                 "before": before,
                 "after": after,
                 "rule_id": "H002",

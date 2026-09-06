@@ -106,10 +106,10 @@ def test_expected_fingerprints_must_match_block_groups():
                 section_fingerprint=snapshot.sections[0].fingerprint,
                 block_id="blkParagraph",
                 node_path=(),
-                source_start=0,
-                source_end=9,
-                before="普通正文可能含糊。",
-                after="普通正文已经明确。",
+                source_start=4,
+                source_end=6,
+                before="可能",
+                after="已经",
                 rule_id="H002",
                 rationale="clarify",
             ),
@@ -156,8 +156,8 @@ def test_post_write_fetch_failure_is_partial_failure(monkeypatch):
     xml = '<h1 block-id="t">标题</h1><p block-id="a">第一块可能含糊。</p>'
     snapshot = project_xml(xml, REF, 10)
     section = snapshot.sections[0]
-    before = "第一块可能含糊。"
-    after = before.replace("可能", "已经")
+    before = "可能"
+    after = "已经"
     from wenlint.feishu.projection import replace_node_text, element_to_xml
 
     patched = replace_node_text(
@@ -168,8 +168,8 @@ def test_post_write_fetch_failure_is_partial_failure(monkeypatch):
             section_fingerprint=section.fingerprint,
             block_id="a",
             node_path=(),
-            source_start=0,
-            source_end=len(before),
+            source_start=3,
+            source_end=5,
             before=before,
             after=after,
             rule_id="H002",
@@ -193,8 +193,8 @@ def test_post_write_fetch_failure_is_partial_failure(monkeypatch):
                 section_fingerprint=section.fingerprint,
                 block_id="a",
                 node_path=(),
-                source_start=0,
-                source_end=len(before),
+                source_start=3,
+                source_end=5,
                 before=before,
                 after=after,
                 rule_id="H002",

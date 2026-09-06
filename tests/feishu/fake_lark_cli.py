@@ -117,6 +117,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if mode == "leaky_error":
+        leak = os.environ.get("FAKE_LARK_LEAK", "<p>secret</p>")
+        sys.stdout.write(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": {"type": "network", "message": leak},
+                }
+            )
+        )
+        return 0
+
     if mode == "partial_success":
         sys.stdout.write(
             json.dumps(

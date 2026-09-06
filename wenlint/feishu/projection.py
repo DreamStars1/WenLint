@@ -276,7 +276,8 @@ def _project_block(
     if tag in _HEADING_TAGS:
         level = int(tag[1])
         cursor = _append_synthetic("#" * level + " ", parts, source_map, cursor)
-        return _project_element(block, block_id, parts, source_map, cursor, True, ())
+        # Headings stay in chapter context but are never auto-writable (§10.2).
+        return _project_element(block, block_id, parts, source_map, cursor, False, ())
 
     if tag in {"li", "checkbox"}:
         cursor = _append_synthetic("- ", parts, source_map, cursor)
@@ -379,7 +380,17 @@ def _project_element(
                 child_path,
             )
         elif child_tag in _EXCLUDED_BLOCK_TAGS:
-            pass
+            # Keep excluded inline resources (e.g. cite) visible for binding
+            # diagnostics, but never mark them writable.
+            cursor = _project_element(
+                child,
+                block_id,
+                parts,
+                source_map,
+                cursor,
+                False,
+                child_path,
+            )
         else:
             cursor = _project_element(
                 child,

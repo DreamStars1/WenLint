@@ -83,7 +83,14 @@ def inspect_document(
             str(exc),
             retryable=False,
         ) from exc
-    revision_id = int(document["revision_id"])
+    raw_revision = document["revision_id"]
+    if isinstance(raw_revision, bool) or not isinstance(raw_revision, int):
+        raise LarkCliError(
+            "invalid_response",
+            "fetch response revision_id must be an integer",
+            retryable=False,
+        )
+    revision_id = raw_revision
     snapshot = project_xml(content, resolved, revision_id)
     raw_findings = scan_text(snapshot.projection, profile=profile)
     public_findings = [_public_finding(item, snapshot.projection) for item in raw_findings]

@@ -17,6 +17,7 @@ from typing import Any
 from xml.etree.ElementTree import Element
 
 from wenlint.feishu.document import DocumentRefError, resolve_fetched_docx_ref
+from wenlint.feishu.findings import bind_findings
 from wenlint.feishu.inspection import inspect_document
 from wenlint.feishu.lark import LarkCliError, LarkClient
 from wenlint.feishu.models import (
@@ -36,6 +37,7 @@ from wenlint.feishu.projection import (
     resolve_text_target,
 )
 from wenlint.feishu.sections import SectionError, locate_section
+from wenlint.scanner import scan_text
 
 _MANIFEST_LIMIT = 1 * 1024 * 1024
 _ALLOWED_TOP_LEVEL = {
@@ -282,6 +284,7 @@ def validate_patches(
             kind="section_changed",
         )
 
+    bound = _bound_findings_for_snapshot(snapshot)
     by_block: dict[str, list[Patch]] = defaultdict(list)
     block_order: list[str] = []
     for patch in plan.patches:
@@ -311,10 +314,21 @@ def validate_patches(
                 kind="block_outside_section",
             )
         _assert_source_matches(snapshot, patch)
+        _assert_writable_source(snapshot, patch)
+        _assert_patch_bound_to_finding(bound, patch)
         _assert_structure_preserved(snapshot, patch)
         if patch.block_id not in by_block:
             block_order.append(patch.block_id)
         by_block[patch.block_id].append(patch)
+
+    for block_id, group in by_block.items():
+        ordered = sorted(group, key=lambda item: item.source_start)
+        for left, right in zip(ordered, ordered[1:]):
+            if left.node_path == right.node_path and left.source_end > right.source_start:
+                raise PatchValidationError(
+                    "overlapping patches in the same block are not allowed",
+                    kind="overlapping_patches",
+                )
 
     if len(plan.expected_fingerprints) != len(block_order):
         raise PatchValidationError(
@@ -326,16 +340,132 @@ def validate_patches(
             "expected_fingerprints entries must be non-empty",
             kind="expected_fingerprints_mismatch",
         )
-
-    for block_id, group in by_block.items():
-        ordered = sorted(group, key=lambda item: item.source_start)
-        for left, right in zip(ordered, ordered[1:]):
-            if left.node_path == right.node_path and left.source_end > right.source_start:
-                raise PatchValidationError(
-                    "overlapping patches in the same block are not allowed",
-                    kind="overlapping_patches",
-                )
+    derived = _derive_expected_fingerprints(snapshot, block_order, by_block)
+    if tuple(plan.expected_fingerprints) != tuple(derived):
+        raise PatchValidationError(
+            "expected_fingerprints do not match the derived post-write fingerprints",
+            kind="expected_fingerprint_mismatch",
+        )
     return plan.patches
+
+
+def _bound_findings_for_snapshot(snapshot: DocumentSnapshot):
+    """Re-scan and bind findings for the current snapshot.
+
+    Args:
+        snapshot: Document snapshot to scan.
+
+    Returns:
+        Bound findings used to authenticate approved patches.
+    """
+    public = []
+    for item in scan_text(snapshot.projection):
+        public.append(
+            {
+                "rule": item["rule_id"],
+                "type": "candidate" if item["severity"] == "candidate" else "lint",
+                "severity": item["severity"],
+                "category": item["category"],
+                "message": item["message"],
+                "review_hint": item["review_hint"],
+                "line": item["line"],
+                "column": item["col"],
+                "text": item["match"],
+                "sentence": item["sentence"],
+                "before": None,
+                "after": None,
+            }
+        )
+    return bind_findings(snapshot, public)
+
+
+def _assert_writable_source(snapshot: DocumentSnapshot, patch: Patch) -> None:
+    """Require the patched source range to sit on writable SourceMap spans.
+
+    Args:
+        snapshot: Current snapshot.
+        patch: Candidate patch.
+
+    Raises:
+        PatchValidationError: When the range is missing or not writable.
+    """
+    spans = [
+        span
+        for span in snapshot.source_map
+        if span.block_id == patch.block_id
+        and span.node_path == patch.node_path
+        and span.source_end > patch.source_start
+        and span.source_start < patch.source_end
+    ]
+    if not spans or any(not span.writable for span in spans):
+        raise PatchValidationError(
+            "patch targets an unsupported or non-writable source span",
+            kind="unsupported_block",
+        )
+
+
+def _assert_patch_bound_to_finding(bound, patch: Patch) -> None:
+    """Require each patch to match one current writable WenLint finding.
+
+    Args:
+        bound: Bound findings from the latest snapshot.
+        patch: Candidate patch.
+
+    Raises:
+        PatchValidationError: When no matching writable finding exists.
+    """
+    for item in bound:
+        loc = item.location
+        if not loc.writable:
+            continue
+        if item.rule != patch.rule_id:
+            continue
+        if loc.block_id != patch.block_id:
+            continue
+        if loc.node_path != patch.node_path:
+            continue
+        if loc.source_start != patch.source_start or loc.source_end != patch.source_end:
+            continue
+        if str(item.finding.get("text") or "") != patch.before:
+            continue
+        return
+    raise PatchValidationError(
+        "patch is not bound to a current writable WenLint finding",
+        kind="finding_mismatch",
+    )
+
+
+def _derive_expected_fingerprints(
+    snapshot: DocumentSnapshot,
+    block_order: list[str],
+    by_block: dict[str, list[Patch]],
+) -> list[str]:
+    """Compute post-write section fingerprints for each block group.
+
+    Args:
+        snapshot: Pre-write snapshot.
+        block_order: Block ids in first-seen write order.
+        by_block: Patches grouped by block id.
+
+    Returns:
+        Fingerprint list aligned with ``block_order``.
+    """
+    working_xml = snapshot.xml
+    fingerprints: list[str] = []
+    section_locator = by_block[block_order[0]][0].section_locator
+    for block_id in block_order:
+        current = project_xml(working_xml, snapshot.ref, snapshot.revision_id)
+        patched_block = _merge_block_patches(current, block_id, by_block[block_id])
+        original = element_to_xml(find_block(parse_blocks(working_xml), block_id))
+        if original not in working_xml:
+            raise PatchValidationError(
+                "unable to derive expected fingerprint for block write group",
+                kind="expected_fingerprint_mismatch",
+            )
+        working_xml = working_xml.replace(original, patched_block, 1)
+        updated = project_xml(working_xml, snapshot.ref, snapshot.revision_id)
+        fingerprints.append(locate_section(updated, section_locator).fingerprint)
+    return fingerprints
 
 
 def apply_approved_section(
@@ -515,12 +645,16 @@ def apply_approved_section(
 
         replace_warnings = []
         if isinstance(replace_payload, Mapping):
+            top_warnings = replace_payload.get("warnings")
+            if isinstance(top_warnings, list) and top_warnings:
+                replace_warnings.extend(top_warnings)
             data = replace_payload.get("data")
             if isinstance(data, Mapping):
                 raw_warnings = data.get("warnings") or []
                 if isinstance(raw_warnings, list) and raw_warnings:
-                    replace_warnings = list(raw_warnings)
-                    warnings.extend(replace_warnings)
+                    replace_warnings.extend(raw_warnings)
+            if replace_warnings:
+                warnings.extend(replace_warnings)
 
         try:
             snapshot = _fetch_snapshot(client, ref)
@@ -675,6 +809,12 @@ def _fetch_snapshot(client: LarkClient, ref: DocumentRef) -> DocumentSnapshot:
         raise LarkCliError(
             "invalid_response",
             "fetch response is missing required document fields",
+            retryable=False,
+        )
+    if isinstance(revision_id, bool) or not isinstance(revision_id, int):
+        raise LarkCliError(
+            "invalid_response",
+            "fetch response revision_id must be an integer",
             retryable=False,
         )
     try:

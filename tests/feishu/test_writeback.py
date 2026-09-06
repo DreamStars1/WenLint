@@ -25,7 +25,7 @@ REF = dataclasses.replace(
 XML_R10 = (
     '<h1 block-id="blkTitle">标题</h1>'
     '<p block-id="blkA">第一块可能含糊。</p>'
-    '<p block-id="blkB">第二块可能含糊。</p>'
+    '<p block-id="blkB">第二块或许含糊。</p>'
 )
 
 
@@ -33,13 +33,16 @@ def _plan_for(xml: str, revision: int = 10) -> ApprovedSectionPlan:
     snapshot = project_xml(xml, REF, revision)
     section = snapshot.sections[0]
     patches: list[Patch] = []
-    for block_id, text in (
-        ("blkA", "第一块可能含糊。"),
-        ("blkB", "第二块可能含糊。"),
+    for block_id, hedge, after in (
+        ("blkA", "可能", "已经"),
+        ("blkB", "或许", "确定"),
     ):
         if block_id not in section.block_ids:
             continue
-        after = text.replace("可能", "已经")
+        root = parse_blocks(snapshot.xml)
+        block = find_block(root, block_id)
+        text = block.text or ""
+        start = text.index(hedge)
         patches.append(
             Patch(
                 patch_id="p1" if block_id == "blkA" else "p2",
@@ -47,9 +50,9 @@ def _plan_for(xml: str, revision: int = 10) -> ApprovedSectionPlan:
                 section_fingerprint=section.fingerprint,
                 block_id=block_id,
                 node_path=(),
-                source_start=0,
-                source_end=len(text),
-                before=text,
+                source_start=start,
+                source_end=start + len(hedge),
+                before=hedge,
                 after=after,
                 rule_id="H002",
                 rationale="clarify",

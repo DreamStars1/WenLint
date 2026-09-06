@@ -299,5 +299,7 @@ def _bound_finding_to_dict(item: BoundFinding) -> dict[str, Any]:
         "mapping_status": loc.mapping_status,
         "writable": loc.writable,
         "reason": loc.reason,
+        "source_start": loc.source_start,
+        "source_end": loc.source_end,
     }
     return payload

@@ -90,7 +90,7 @@ wenlint-feishu apply <url> --patch-file m.json --json  # 仅应用已批准章�
 - **引号与括号内正文照常检查**——元语境（示例词/引述）由语义层判 KEEP，不由规则层静默放过
 - 词规则只在正文行执行（段落/列表/引用块）；目录扫描自动跳过 .git/.venv/node_modules/build 等
 
-## 职责划分（v0.1 定案）
+## 职责划分
 
 **WenLint 是工具，Skill 是 Agent。**
 
@@ -139,7 +139,7 @@ ASK      资料也不足，需要作者确认（绝不在无依据时删"可能"
 **不输出 `replacement`**——WenLint 不知道该怎么改，判断属于 Skill。
 
 
-## CI 与门禁（v0.1 定位）
+## CI 与门禁
 
 - **默认只输出报告，不做强制门禁**——规则命中不等于真问题：
   C001/H001 等 warning 级规则也会被 LLM 判 KEEP（如引述示例词）。
@@ -155,14 +155,14 @@ ASK      资料也不足，需要作者确认（绝不在无依据时删"可能"
 ## 配置
 
 - **profile**：`academic/product/formal/general`（词表分级 + 参数调整）
-- **自定义规则**：编辑 `wenlint/rules.py`（v0.2 迁 `wenlint.toml`）
+- **自定义规则**：编辑 `wenlint/rules.py`（后续迁 `wenlint.toml`）
 - **忽略文件**：项目根 `.wenlintignore`（glob；`tests/` 尾斜杠 = 目录前缀）
 
 ## 开发
 
 ```bash
-pip install pytest
-python -m pytest tests/     # 完整回归测试（mask/行号/scope/注释状态机/CLI/飞书适配器）
+pip install -e ".[test]"
+python -m pytest tests/     # 完整回归测试（本地扫描 + 飞书适配器）
 ```
 
 ## 仓库结构
@@ -173,10 +173,11 @@ wenlint/
 │   ├── rules.py         # 规则数据声明（ID/pattern/block/review_hint）
 │   ├── scanner.py       # 扫描引擎（mask 后规则分发 + 语言守卫）
 │   ├── markdown.py      # Markdown 保护层（行角色分类 + 等长 mask）
-│   ├── cli.py           # 路由 + review 步骤编排
+│   ├── cli.py           # 本地文件路由 + review 步骤编排
+│   ├── feishu/          # 飞书 Docx/Wiki 检查与安全写回（wenlint/feishu/）
 │   └── __init__.py      # 版本
-├── tests/               # pytest 回归（36 tests）
-├── pyproject.toml       # packaging（wenlint 命令）
+├── tests/               # pytest 回归（本地 + 飞书）
+├── pyproject.toml       # packaging（wenlint / wenlint-feishu 命令）
 ├── LICENSE              # MIT
 └── README.md
 ```

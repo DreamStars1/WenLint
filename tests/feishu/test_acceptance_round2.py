@@ -209,8 +209,8 @@ def test_second_retry_preserves_non_conflict_error_kind(monkeypatch):
     xml = '<h1 block-id="t">标题</h1><p block-id="a">第一块可能含糊。</p>'
     snapshot = project_xml(xml, REF, 10)
     section = snapshot.sections[0]
-    before = "第一块可能含糊。"
-    after = before.replace("可能", "已经")
+    before = "可能"
+    after = "已经"
     patched = replace_node_text(
         snapshot,
         Patch(
@@ -219,8 +219,8 @@ def test_second_retry_preserves_non_conflict_error_kind(monkeypatch):
             section_fingerprint=section.fingerprint,
             block_id="a",
             node_path=(),
-            source_start=0,
-            source_end=len(before),
+            source_start=3,
+            source_end=5,
             before=before,
             after=after,
             rule_id="H002",
@@ -243,8 +243,8 @@ def test_second_retry_preserves_non_conflict_error_kind(monkeypatch):
                 section_fingerprint=section.fingerprint,
                 block_id="a",
                 node_path=(),
-                source_start=0,
-                source_end=len(before),
+                source_start=3,
+                source_end=5,
                 before=before,
                 after=after,
                 rule_id="H002",
@@ -397,7 +397,7 @@ def test_apply_network_during_preflight_exits_3(tmp_path):
                 "revision_id": 12,
                 "url": DOC_URL,
                 "content": xml,
-                "fail_fetch_after": 1,
+                "fail_fetch_after": 0,
             }
         ),
         encoding="utf-8",

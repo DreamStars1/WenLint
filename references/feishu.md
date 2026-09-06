@@ -92,12 +92,12 @@ inspect → four-class review → overall summary
 - 未被本次批准覆盖的文档范围发生变化并导致 remap/校验失败
 
 目标章节变化 → 重扫并重新确认；其他章节变化不阻止当前章在 fingerprint 未变时继续。
+revision 冲突且目标章节未变时，可重映射并重试一次；目标章节已变或连续两次 revision 冲突则停止并重新确认。
 
 ## 安全写回要点
 
 - 每个 block 写入前后都基于最新快照验证；成功写入后必须回读并重映射（remap）剩余 patch。
 - 除一次受限的 revision 冲突重试外，失败即停止后续写入；不自动回滚已成功的 block。
-- 冲突会使原章节批准失效，需要重新确认。
 - stdout 只输出状态与最小定位信息，不回显全文或完整 patched XML。
 - 结束、失败或取消时清理 Skill 自己创建的临时 manifest；不要删除用户传入的任意文件。
 
