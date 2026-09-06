@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "文尺 WenLint：中文写作静态检查器——像 ESLint 一样检查 PRD、论文、报告和 Markdown"
 readme = "README.md"
 license = { text = "MIT" }
-authors = [{ name = "Zheng Haopei" }]
+authors = [{ name = "Zheng Haipei" }]
 requires-python = ">=3.9"
 keywords = ["linter", "chinese", "prose", "writing", "markdown"]
 classifiers = [

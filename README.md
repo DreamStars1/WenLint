@@ -126,4 +126,4 @@ wenlint/
 
 ## 许可证
 
-[MIT](LICENSE) © 2026 Zheng Haopei（郑海培）。自由使用、修改、分发，保留版权声明即可。
+[MIT](LICENSE) © 2026 Zheng Haipei（郑海培）。自由使用、修改、分发，保留版权声明即可。
