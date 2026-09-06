@@ -92,10 +92,21 @@ def _compile(rule):
 _COMPILED = {r["id"]: _compile(r) for r in RULES}
 
 
+def _cn_ratio(s):
+    """中文字符占比"""
+    if not s:
+        return 0.0
+    cn = sum(1 for ch in s if "\u4e00" <= ch <= "\u9fff")
+    return cn / len(s)
+
+
 def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
     """扫描文本，返回 findings 列表（按行、列排序）。
     finding: dict(line, col, rule_id, severity, category, match, message)
+    语言守卫：wenlint 是中文 linter——文本中文字符占比 <5% 视为非中文文件，跳过。
     """
+    if _cn_ratio(text) < 0.05:
+        return []
     prof = PROFILES.get(profile, PROFILES[DEFAULT_PROFILE])
     disabled = set(prof.get("disable", []))
     sev_ov = prof.get("severity_override", {})
@@ -112,7 +123,7 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
         severity = sev_ov.get(rid, rule["severity"])
         rpats, rblock = _COMPILED[rid]
 
-        if rid == "S001":   # 超长句：逐行按句读拆，跳过表格行
+        if rid == "S001":   # 超长句：逐行按句读拆，跳过表格行/低中文占比行
             max_len = params.get("S001", {}).get("max_len", rule.get("max_len", 60))
             for ln, mline in enumerate(masked, 1):
                 stripped = mline.strip()
@@ -120,7 +131,8 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
                     continue
                 for seg in re.split(r"(?<=[。！？!?；;])", stripped):
                     seg = seg.strip()
-                    if len(seg) > max_len:
+                    # 语言守卫：中文字符占比 <30% 的行（英文/代码/URL 行）不判长句
+                    if len(seg) > max_len and _cn_ratio(seg) >= 0.30:
                         findings.append({
                             "line": ln, "col": 1, "rule_id": rid,
                             "severity": severity, "category": rule["category"],
