@@ -108,4 +108,4 @@ zh-prose-smell/
 
 ## 许可证
 
-[MIT](LICENSE) © 2026 starlu（星露）。自由使用、修改、分发，保留版权声明即可。
+[MIT](LICENSE) © 2026 DreamStars1。自由使用、修改、分发，保留版权声明即可。
