@@ -1,0 +1,12 @@
+{
+  "ok": true,
+  "data": {
+    "document": {
+      "document_id": "DocToken",
+      "revision_id": 12,
+      "title": "Fictional Product Spec",
+      "url": "https://acme.feishu.cn/docx/DocToken"
+    },
+    "content": "<h1 block-id=\"blkTitle\">产品设计</h1><p block-id=\"blkParagraph\">普通正文可能含糊。</p>"
+  }
+}
