@@ -4,7 +4,16 @@ import os
 import subprocess
 import sys
 
+from wenlint.cli import main
+
 ROOT = os.path.join(os.path.dirname(__file__), "..")
+
+
+def test_local_cli_still_accepts_path_named_feishu(tmp_path, monkeypatch):
+    target = tmp_path / "feishu"
+    target.write_text("这是普通正文。", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert main(["feishu"]) == 0
 
 
 def run_cli(args, cwd=None):
