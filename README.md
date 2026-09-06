@@ -26,7 +26,7 @@ pip install -e .             # 本地安装，获得 wenlint 命令（仅标准�
 wenlint 文档.md                     # review：发现候选
 wenlint docs/                       # 目录
 wenlint . --profile academic        # 论文场景（H002 学术词关闭、长句放宽 80）
-wenlint . --fail-level warning      # CI：有 >= warning 时 exit 1
+wenlint . --fail-level warning      # 严格门禁：有 >= warning 时 exit 1
 wenlint 文档.md --json              # 结构化输出（供 Skill/LLM 消费）
 ```
 
@@ -45,8 +45,8 @@ wenlint 文档.md --json              # 结构化输出（供 Skill/LLM 消费�
 | H002 | 模糊词（软） | candidate | `可能/或许/也许…`（academic profile 关闭；语义判断：合理 hedge KEEP / 无据断言 VERIFY） |
 | H003 | `左右` 歧义 | candidate | `左右边/两侧/手/翼` 空间义自动豁免 |
 | E001 | 空洞强调 | suggestion | `非常/十分/真的/超级…` |
-| R001 | 冗余动词 | suggestion | ❌ | `进行` + 动词（语境正则，如"进行分析"） |
-| R002 | 冗余表达 | suggestion | ✅ | `是否能够` → `能否` |
+| R001 | 冗余动词 | suggestion | `进行` + 动词（语境正则，如"进行分析"） |
+| R002 | 冗余表达 | suggestion | `是否能够` → `能否` |
 | D001 | 相邻重复词 | warning | `语义风险，留给人工` |
 | S001 | 超长句 | suggestion | 文档 80 字；SKILL.md 收紧 50 字 |
 
@@ -124,17 +124,30 @@ ASK      资料也不足，需要作者确认（绝不在无依据时删"可能"
 **不输出 `replacement`**——WenLint 不知道该怎么改，判断属于 Skill。
 
 
-## 配置与扩展
+## CI 与门禁（v0.1 定位）
+
+- **默认只输出报告，不做强制门禁**——规则命中不等于真问题：
+  C001/H001 等 warning 级规则也会被 LLM 判 KEEP（如引述示例词）。
+- `--fail-level warning` 只用于**严格场景**（已知干净的文档防回归）。
+- 等真实语料验证规则精度（KEEP 率统计）后，再决定哪些规则有资格阻断 CI。
+
+## 数据驱动的规则收敛（roadmap）
+
+拿 20-30 篇真实文档跑一轮，记录每条 finding 最终判 KEEP/REWRITE/VERIFY/ASK，
+按规则统计 KEEP 比例。某条规则大部分命中都是 KEEP → 降级 candidate 或移除。
+这个反馈数据比继续扩充词表更有价值。
+
+## 配置
 
 - **profile**：`academic/product/formal/general`（词表分级 + 参数调整）
 - **自定义规则**：编辑 `wenlint/rules.py`（v0.2 迁 `wenlint.toml`）
-- **CI**：`--fail-level warning`，命中即 exit 1
+- **忽略文件**：项目根 `.wenlintignore`（glob；`tests/` 尾斜杠 = 目录前缀）
 
 ## 开发
 
 ```bash
 pip install pytest
-python -m pytest tests/     # 26 个回归测试（mask/行号/scope 行为/CLI）
+python -m pytest tests/     # 36 个回归测试（mask/行号/scope/注释状态机/CLI）
 ```
 
 ## 仓库结构
@@ -147,7 +160,7 @@ wenlint/
 │   ├── markdown.py      # Markdown 保护层（行角色分类 + 等长 mask）
 │   ├── cli.py           # 路由 + review 步骤编排
 │   └── __init__.py      # 版本
-├── tests/               # pytest 回归（32 tests）
+├── tests/               # pytest 回归（36 tests）
 ├── pyproject.toml       # packaging（wenlint 命令）
 ├── LICENSE              # MIT
 └── README.md

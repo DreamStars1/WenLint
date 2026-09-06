@@ -67,3 +67,49 @@ def test_no_fix_flag(tmp_path):
     p.write_text("总而言之，方案。\n", encoding="utf-8")
     r = run_cli([str(p), "--fix"])
     assert r.returncode == 2, "未知参数应报错退出"
+
+
+def test_wenlintignore_trailing_slash_works(tmp_path, monkeypatch):
+    """.wenlintignore 的 tests/ 目录语义应排除 tests/fixtures/*.md"""
+    (tmp_path / "tests" / "fixtures").mkdir(parents=True)
+    (tmp_path / "tests" / "fixtures" / "smoke.md").write_text(
+        "总而言之，故意坏味。\n", encoding="utf-8")
+    (tmp_path / "doc.md").write_text("正文没问题。\n", encoding="utf-8")
+    (tmp_path / ".wenlintignore").write_text("tests/\n", encoding="utf-8")
+    r = run_cli(["--json", str(tmp_path)])
+    data = json.loads(r.stdout)
+    assert all("tests/" not in d["file"] for d in data), \
+        "tests/ 目录应被忽略"
+
+
+def test_wenlintignore_relative_to_project_root(tmp_path):
+    """.wenlintignore 相对项目根加载（从其他 cwd 运行也生效）"""
+    proj = tmp_path / "proj"
+    (proj / "sub").mkdir(parents=True)
+    (proj / "sub" / "x.md").write_text("总而言之。\n", encoding="utf-8")
+    (proj / "doc.md").write_text("正文没问题。\n", encoding="utf-8")
+    (proj / ".wenlintignore").write_text("sub/\n", encoding="utf-8")
+    r = run_cli(["--json", str(proj)], cwd=ROOT)
+    data = json.loads(r.stdout)
+    assert data == [] or all("sub/" not in d["file"] for d in data), \
+        "sub/ 应被忽略（相对项目根），doc.md 可保留"
+
+
+def test_cliche_in_fenced_code_comment_ok(tmp_path):
+    """代码块内的 <!-- 不破坏注释状态机（后续正文照常检查）"""
+    p = tmp_path / "x.md"
+    p.write_text("```html\n<!-- 示例代码\n```\n正文总而言之，很重要。\n",
+                 encoding="utf-8")
+    r = run_cli([str(p), "--json"])
+    data = json.loads(r.stdout)
+    assert any("C001" in d["rule"] for d in data), "代码块后的正文应被检查"
+
+
+def test_inline_code_comment_marker_ok(tmp_path):
+    """行内代码 `<!--` 不触发注释状态（后半句照常检查）"""
+    p = tmp_path / "x.md"
+    p.write_text("正文用 `<!--` 表示注释，总而言之，后面该查。\n",
+                 encoding="utf-8")
+    r = run_cli([str(p), "--json"])
+    data = json.loads(r.stdout)
+    assert any("C001" in d["rule"] for d in data), "行内代码后的正文应被检查"

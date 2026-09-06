@@ -26,9 +26,9 @@ from .scanner import scan_text
 
 LEVEL_RANK = {"error": 3, "warning": 2, "suggestion": 1, "candidate": 0}
 DOC_EXTS = (".md", ".txt", ".rst", ".markdown")
-# 目录扫描时跳过的非源码目录
+# 目录扫描时跳过的非源码目录（文档模板类不在此列，由各项目 .wenlintignore 自决）
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "build", "dist",
-             "__pycache__", ".pytest_cache", ".archive", "templates"}
+             "__pycache__", ".pytest_cache", ".archive"}
 
 
 # ============ 路由层 ============
@@ -118,8 +118,8 @@ def _load_ignore(cwd):
 def _collect_files(paths):
     """收集待检查文件（多路径输入展开）。
 
-    跳过常见非源码目录与隐藏目录：.git/.venv/node_modules/build/dist/
-    __pycache__/.pytest_cache/tests 的 fixture 目录等。
+    跳过常见非源码目录与隐藏目录；每个输入目录若有 .wenlintignore，
+    按**项目根相对路径**应用忽略（pattern 尾 / 表示目录前缀）。
 
     Args:
         paths: 文件或目录路径列表。
@@ -127,40 +127,49 @@ def _collect_files(paths):
     Returns:
         list[str]：排序去重后的文件路径（.md/.txt/.rst/.markdown）。
     """
-    ignore = _load_ignore(os.getcwd())
     files = []
     for p in paths:
         if os.path.isfile(p):
             files.append(p)
-        else:
-            for root, dirs, fs in os.walk(p):
-                dirs[:] = [d for d in dirs if d not in SKIP_DIRS
-                           and not d.startswith(".")]
-                for f in fs:
-                    if not f.endswith(DOC_EXTS):
-                        continue
-                    fp = os.path.join(root, f)
-                    if ignore and _ignored(fp, ignore):
-                        continue
-                    files.append(fp)
+            continue
+        ignore = _load_ignore(p)   # 项目自己的 .wenlintignore（相对项目根）
+        for root, dirs, fs in os.walk(p):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS
+                       and not d.startswith(".")]
+            for f in fs:
+                if not f.endswith(DOC_EXTS):
+                    continue
+                fp = os.path.join(root, f)
+                if ignore and _ignored(fp, ignore, p):
+                    continue
+                files.append(fp)
     return sorted(set(files))
 
 
-def _ignored(fp, patterns):
-    """判断文件是否匹配任一忽略模式（相对路径或 basename 匹配）。
+def _ignored(fp, patterns, base=None):
+    """判断文件是否匹配任一忽略模式。
+
+    目录语义：pattern 以 / 结尾（如 "tests/"）→ 相对路径前缀匹配；
+    否则 fnmatch glob（相对路径或 basename）。
 
     Args:
         fp: 文件路径。
         patterns: .wenlintignore 模式列表。
+        base: 项目根（模式相对的基准）；None 时用 cwd。
 
     Returns:
         bool：True 表示应忽略。
     """
     import fnmatch
-    rel = os.path.relpath(fp)
-    return any(fnmatch.fnmatch(rel, pat)
-               or fnmatch.fnmatch(os.path.basename(fp), pat)
-               for pat in patterns)
+    rel = os.path.relpath(fp, base or os.getcwd())
+    for pat in patterns:
+        if pat.endswith("/"):
+            if rel.startswith(pat):
+                return True
+        elif fnmatch.fnmatch(rel, pat) \
+                or fnmatch.fnmatch(os.path.basename(fp), pat):
+            return True
+    return False
 
 
 def _load_texts(files):

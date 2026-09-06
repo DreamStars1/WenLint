@@ -84,10 +84,24 @@ def mask_line(line):
     return masked
 
 
+def _strip_inline_code(line):
+    """行内代码占位（供 HTML 注释识别前使用：代码内的 <!-- 不应触发注释状态）。
+
+    Args:
+        line: 单行文本。
+
+    Returns:
+        str：与 line 等长，行内代码段已换空格。
+    """
+    return re.sub(r"`[^`\n]*`", lambda m: _blank(m.group(0)), line)
+
+
 def mask_text(text):
     """整段 mask：front matter/代码块/缩进代码/多行注释 整块屏蔽。
 
-    状态机逐行处理，除被屏蔽区域外的普通行再过 mask_line（行内 mask）。
+    状态机逐行处理，顺序（代码区优先于注释识别，防代码内 <!-- 破坏状态）：
+    front matter → 围栏内 → 围栏开关 → 缩进代码 → 行内代码占位 →
+    HTML 注释 → 行内 mask。除被屏蔽区域外的普通行再过 mask_line。
     返回与原文等长、等行数的文本（行号列号不变）。
 
     Args:
@@ -106,36 +120,18 @@ def mask_text(text):
     for i, line in enumerate(lines):
         s = line.strip()
 
-        # 多行 HTML 注释（区间 mask：等长，不丢注释前后正文）
-        if in_comment:
-            if "-->" in line:
-                end = line.find("-->") + 3
-                out.append(_blank(line[:end]) + mask_line(line[end:]))
-                in_comment = False
+        # 围栏内：整行屏蔽（代码内容不参与任何注释/正文识别）
+        if in_fence:
+            if s.startswith(("```", "~~~")):
+                out.append(line)
+                in_fence = False
             else:
                 out.append(_blank(line))
             continue
-        if "<!--" in line:
-            s_begin = line.find("<!--")
-            if "-->" in line:
-                e_end = line.find("-->") + 3
-                # 单行注释：注释前正文 mask + 注释段 blank + 注释后正文 mask
-                out.append(mask_line(line[:s_begin]) +
-                           _blank(line[s_begin:e_end]) +
-                           mask_line(line[e_end:]))
-            else:
-                # 多行注释开始行：<!-- 前正文 mask，注释段 blank 到行尾
-                out.append(mask_line(line[:s_begin]) + _blank(line[s_begin:]))
-                in_comment = True
-            continue
-
-        # 代码围栏
+        # 围栏开关
         if s.startswith(("```", "~~~")):
             out.append(line)
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            out.append(_blank(line))
+            in_fence = True
             continue
 
         # 缩进代码块：文件开头或空行后出现 4 空格/制表符缩进
@@ -160,6 +156,31 @@ def mask_text(text):
                 out.append(line)
             else:
                 out.append(_blank(line))
+            continue
+
+        # 行内代码占位后再识别 HTML 注释：`<!--` 在代码里不触发注释状态
+        check = _strip_inline_code(line)
+
+        if in_comment:
+            if "-->" in check:
+                end = check.find("-->") + 3
+                out.append(_blank(check[:end]) + mask_line(line[end:]))
+                in_comment = False
+            else:
+                out.append(_blank(line))
+            continue
+        if "<!--" in check:
+            s_begin = check.find("<!--")
+            if "-->" in check:
+                e_end = check.find("-->") + 3
+                # 单行注释：注释前正文 mask + 注释段 blank + 注释后正文 mask
+                out.append(mask_line(line[:s_begin]) +
+                           _blank(line[s_begin:e_end]) +
+                           mask_line(line[e_end:]))
+            else:
+                # 多行注释开始行：<!-- 前正文 mask，注释段 blank 到行尾
+                out.append(mask_line(line[:s_begin]) + _blank(line[s_begin:]))
+                in_comment = True
             continue
 
         # 普通行：行内 mask（引号与括号内容不保护，照常检查）
