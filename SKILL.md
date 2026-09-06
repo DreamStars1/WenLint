@@ -1,94 +1,66 @@
 ---
-name: zh-prose-smell
-description: 中文散文坏味检查器——jieba 分词+词表规则，检测文档中的 AI 腔/废话填充、模糊词、空洞强调、重复词、超长句。写中文文档（PRD/论文/给医生的材料/任何 markdown）后或检查 AI 生成内容时使用。用法：python scripts/zh_prose_smell.py <文件或目录>。
+name: wenlint
+description: 检查中文文档写作/检测 AI 味时使用。文尺 WenLint：像 ESLint 一样的中文写作静态检查器（规则 ID + profile + 安全 fix）。
 ---
 
-# zh-prose-smell：中文散文坏味检查器
+# 文尺 WenLint：中文写作静态检查器
 
-把"代码异味"检测思路搬到中文散文：快速、免费、确定性揪出写作中的高频毛病。
-定位 = 浅层确定性检测器（Checkstyle 之于代码坏味），语义级问题留给 LLM/人。
+像 ESLint 检查代码一样检查中文 PRD、论文、报告和 Markdown。确定性规则引擎（词法模式/套话/模糊词/冗余/长句），不是"AI 味扫描器"。
 
 ## 何时使用
 
-- 用户写完中文文档/PRD/论文/报告，要求"检查一下写作/有没有 AI 味/用词问题"
-- 检查 AI 生成内容是否带 AI 腔（对外交付的文档尤其需要）
-- 用户提到 vale / prose lint / 散文坏味 / prose smell
+- 用户写完中文文档/PRD/论文/报告，要求"检查写作/有没有 AI 味/用词问题"
+- 检查 AI 生成内容的质量（对外交付的文档尤其需要）
+- 用户提到 wenlint / 文尺 / prose lint / 中文写作检查
 
 ## 执行原则（先查找，后询问）
 
 用户没指明具体文件时，按顺序自行定位，不要问"检查哪个文件"：
 1. 工作区/家目录最近的 .md 文档（~ 文档、PRD、论文调研、当前工作目录）
-2. 代码库内 markdown（README/docs/AGENTS.md；用 search_files 找含 AI 腔词的文件）
+2. 代码库内 markdown（README/docs/AGENTS.md；用 search_files 找含套话词的文件）
 3. 网络内容：用户给 URL，或能 web 搜索定位的文档/知识（提到某文章/标准先自己搜）
 4. 定位不到或歧义大（多个候选）才询问用户
 
-默认用 review 模式（只报告不改文件）；用户明确要改时用 --fix / --fix --apply。
+默认 review（只报告不改）；用户明确要改才 --fix。
 
-## 依赖
-
-```bash
-pip install jieba        # 唯一依赖（中文分词）
-```
-
-## 用法
+## 安装与运行
 
 ```bash
-# 单文件或目录（.md/.txt/.rst）
-python <skill_dir>/scripts/zh_prose_smell.py 文档.md
-python <skill_dir>/scripts/zh_prose_smell.py <目录>/
-
-# JSON 输出（脚本消费）
-python <skill_dir>/scripts/zh_prose_smell.py 文档.md --json
-
-# fix 模式（自动修复：删 AI 腔引导词/重复词，显示 diff 不写盘）
-python <skill_dir>/scripts/zh_prose_smell.py 文档.md --fix
-# fix + 写盘（先备份 .bak）
-python <skill_dir>/scripts/zh_prose_smell.py 文档.md --fix --apply
+pip install -e <repo_path>       # 一次性安装，获得 wenlint 命令
+# 或免安装： cd <repo_path> && python -m wenlint <path>
 ```
 
-输出格式（vale 风格）：`文件:行:列  级别  类别: 命中的词`
+```bash
+wenlint 文档.md                    # review
+wenlint . --profile academic       # 论文场景
+wenlint README.md --fix            # 修复预览（不写盘）
+wenlint README.md --fix --apply    # 写回（先备份 .bak）
+wenlint . --fail-level warning     # CI：有 >= warning 时 exit 1
+```
 
-## 两种模式
+## 输出格式
 
-1. **review（默认）**：只检查报告，不改文件
-2. **fix（--fix）**：自动修复后输出 diff；`--apply` 写盘（自动备份 .bak）
-   - 自动改：AI 腔引导词（词后接逗号/句读/行尾时）+ 中文相邻重复词
-   - 不自动改（fix 后列出待人工/LLM）：定语结构（`综上所述的方案`）、模糊词、强调词、超长句
+`文件:行:列  规则ID  级别  类别  message`
 
-## 检测类别
+```
+README.md:18:7  C001  warning  套话/废话填充  套话「总而言之」，删掉更直接
+```
 
-| 类别 | 级别 | 抓什么 |
-|---|---|---|
-| AI味/废话填充 | warning | `总而言之、综上所述、值得注意的是、众所周知、赋能、抓手、闭环、颗粒度…`（AI_CLICHE 词表） |
-| 模糊词 | warning | `大概、好像、似乎、也许、或许、差不多、一定程度…`（FUZZY_WORDS） |
-| 空洞强调词 | suggestion | `非常、十分、极其、超级、真的、简直…`（EMPTY_EMPHASIS） |
-| 重复用词 | warning | jieba 词级相邻重复（`真的真的`） |
-| 超长句 | suggestion | 单句 >60 字无断句 |
+## 规则速查
 
-## Markdown 智能
+- **C001** 套话引导词（`总而言之/综上所述…，可自动删`）
+- **C002** 术语滥用（`赋能/抓手/闭环…`）
+- **H001** 模糊词硬（`大概/好像/差不多`）；**H002** 模糊词软（`可能/或许`，academic profile 关闭）
+- **E001** 空洞强调（`非常/真的…`）；**R001** 冗余动词（进行+动词）
+- **D001** 相邻重复词；**S001** 超长句（`>60 字，academic 80`）
 
-自动跳过/处理（不误报）：
-- 代码块（``` 围栏 + 4 空格缩进）
-- 行内代码 `` `code` ``、图片、HTML 标签、注释、删除线
-- 链接 URL（保留链接文字参与检查）
-- YAML front matter、表格行、标题行
+## 安全规则（fix）
 
-## 自定义词表
+**自动改**（高置信白名单 C001/C003/R002）：删除套话引导词（词后接逗号/句读/行尾时）
+**绝不自动改**：定语结构（`综上所述的方案`）、引号/代码内、模糊词、重复词、超长句（fix 后列出）
 
-编辑脚本顶部的 5 个词表列表：
-`AI_CLICHE / FUZZY_WORDS / EMPTY_EMPHASIS / REDUNDANT / AI_HALLUCINATION_HEDGE`
-- ≤4 字词：jieba 词级精确匹配
-- >4 字短语：原文子串匹配（兜底）
-把用户不喜欢的词/表达加进去即可，零门槛。
+## 两段式（对 LLM 协作的定位）
 
-## 设计背景（与 vale 的关系）
-
-vale 是英文 prose linter，按空格分词——中文无空格导致句内词全漏检（实测只命中句首词）。
-本工具用 jieba 分词解决中文 token 化，是 vale 思路的中文实现。两者对比如下：
-
-| 维度 | vale | zh-prose-smell |
-|---|---|---|
-| 中文句内词匹配 | ❌ 漏检 | ✅ 全命中 |
-| 规则生态（英文向） | ✅ 丰富 | ❌ 自建词表 |
-| markup 支持 | ✅ 深度 | ✅ 常用覆盖 |
-| 依赖 | Go 二进制 | Python + jieba |
+本工具是**第一层 deterministic lint**：快、可解释、可 CI。
+语义级问题（逻辑跳跃/段落重复/论证空洞）属**第二层 semantic review**（LLM）。
+两者输出必须分开，不要把 LLM 判断包装成 lint warning。

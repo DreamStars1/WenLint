@@ -1,108 +1,126 @@
-# zh-prose-smell：中文散文坏味检查器
+# 文尺 WenLint
+
+中文写作静态检查器——像 ESLint 一样检查你的 PRD、论文、报告和 Markdown。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-把"代码异味"检测思路搬到中文散文：jieba 分词 + 词表规则，快速免费揪出高频写作毛病。
+不是"AI 味检测器"。AI 套话只是其中一类规则。
+它是**确定性规则引擎**：快速、可解释、可复现，留好接 LLM 语义审查的接口。
 
-vale 按空格分词，中文整句成块、句内词漏检（实测只命中句首）；本工具为中文重做，jieba 版全量命中。
+```
+README.md:18:7   C001  warning     套话/废话填充  「总而言之」
+paper.md:42:16   H002  suggestion  模糊词         「大概」
+prd.md:76:1      S001  suggestion  超长句         94 chars
+```
 
 ## 安装
 
 ```bash
-pip install jieba        # 唯一依赖
-
-# 作为 CLI 使用
-git clone <本仓库> zh-prose-smell
-# 或作为 Hermes skill：把整个仓库放入 ~/.hermes/skills/productivity/zh-prose-smell/
+pip install jieba            # 运行时依赖（可选，部分规则用）
+pip install -e .             # 本地安装，获得 wenlint 命令
+# 或直接运行： python -m wenlint <path>
 ```
 
 ## 用法
 
 ```bash
-# 模式一：review（只检查，默认）
-python scripts/zh_prose_smell.py 文档.md
-python scripts/zh_prose_smell.py 论文调研目录/
-
-# 模式二：fix（自动修复 + 显示 diff，不写盘）
-python scripts/zh_prose_smell.py 文档.md --fix
-
-# 模式二 + 写盘（先自动备份 .bak）
-python scripts/zh_prose_smell.py 文档.md --fix --apply
-
-# JSON 输出（供脚本消费）
-python scripts/zh_prose_smell.py 文档.md --json
+wenlint 文档.md                     # review
+wenlint docs/                       # 目录
+wenlint . --profile academic        # 论文场景（H002 学术词关闭、长句放宽 80）
+wenlint README.md --fix             # 修复预览（不写盘）
+wenlint README.md --fix --apply     # 写回（先备份 .bak）
+wenlint . --fail-level warning      # CI：有 >= warning 时 exit 1
+wenlint 文档.md --json              # 机器可读
 ```
 
-### fix 模式的安全规则
+## 规则
 
-**自动改**（语义无损）：
-- 删除 AI 腔引导词：`总而言之、综上所述、值得注意的是、众所周知…`（仅当词后接逗号/句读/行尾）
-- 中文相邻重复词去重：`真的真的` → `真的`
+| ID | 规则 | 级别 | fixable | 说明 |
+|---|---|---|---|---|
+| C001 | cliche-intro 套话引导词 | warning | ✅ | `总而言之/值得注意的是/众所周知…`（词后接逗号/句读才删） |
+| C002 | buzzword 术语滥用 | warning | ❌ | `赋能/抓手/闭环/颗粒度…` |
+| C003 | 套话 | warning | ✅ | `由此可见`（block：`由此可见一斑`） |
+| H001 | 模糊词（硬） | warning | ❌ | `大概/好像/似乎/差不多` |
+| H002 | 模糊词（软） | suggestion | ❌ | `可能/或许/也许…`（academic profile 关闭） |
+| H003 | `左右` 歧义 | suggestion | ❌ | `左右边/两侧/手/翼` 空间义自动豁免 |
+| E001 | 空洞强调 | suggestion | ❌ | `非常/十分/真的/超级…` |
+| R001 | 冗余动词 | suggestion | ❌ | `进行` + 动词（语境正则，如"进行分析"） |
+| R002 | 冗余表达 | suggestion | ✅ | `是否能够` → `能否` |
+| D001 | 相邻重复词 | warning | ❌ | `语义风险，留给人工` |
+| S001 | 超长句 | suggestion | ❌ | `>60 字（academic 80）` |
 
-**绝不自动改**（留给人工/LLM，fix 后报告列出）：
-- 定语结构：如 `综上所述的方案`（删了破坏句法）——词后接"的/之/地"时跳过
-- 模糊词（`大概/可能/好像`）——删除改变语义确定性
-- 空洞强调词（`非常/真的/超级`）——语气取舍因人而异
-- 超长句——需要理解语义才能拆
-
-## 输出示例
-
-```
-test/zh.md:1:1   warning     AI味/废话填充: 总而言之
-test/zh.md:1:10  suggestion  空洞强调词: 非常
-test/zh.md:1:19  warning     模糊词: 大概
-test/zh.md:7:5   suggestion  空洞强调词: 非常
-```
-
-格式仿 vale：`文件:行:列  级别  类别: 命中的词`
-
-## 检测类别
-
-| 类别 | 级别 | 抓什么 |
-|---|---|---|
-| **AI味/废话填充** | warning | `总而言之、综上所述、值得注意的是、众所周知、毋庸置疑、不难发现、赋能、抓手、闭环、颗粒度…` |
-| **模糊词** | warning | `大概、好像、似乎、也许、或许、差不多、一定程度…` |
-| **空洞强调词** | suggestion | `非常、十分、极其、超级、真的、简直…` |
-| **重复用词** | warning | jieba 词级相邻重复（`这个这个`、`真的真的`） |
-| **超长句** | suggestion | 单句 >60 字无断句（跳过代码块/表格行） |
-
-## Markdown 智能
-
-- ✅ 自动跳过代码块（``` 围栏 + 缩进代码），只查正文
-- ✅ 自动跳过表格行、标题行（不误报超长句）
-- ✅ 输出行:列定位
-
-## 扩展词表
-
-编辑脚本顶部的列表即可：
+## 规则结构（不是"词=坏味"，是规则引擎）
 
 ```python
-AI_CLICHE = ["总而言之", "赋能", "抓手", ...]      # 你讨厌的 AI 腔
-FUZZY_WORDS = ["大概", "可能", ...]                # 模糊词
-EMPTY_EMPHASIS = ["非常", ...]                     # 空洞强调
+{
+  "id": "R001",                    # 规则 ID（可 ignore/配置）
+  "category": "冗余结构",
+  "severity": "suggestion",
+  "patterns": [r"进行(?=(分析|讨论|研究|说明))"],   # 语境正则
+  "block": None,                   # 例外（如"由此可见一斑"）
+  "fixable": False,                # 只有高置信规则才自动修
+  "message": "…",
+}
 ```
 
-词的匹配 = jieba 分词词级命中（≤4字词）+ 短语子串兜底（>4字），自己加词零门槛。
+`可能` 在论文里是重要学术审慎（epistemic hedge），在营销软文里则算含糊——所以分 H001/H002 级。
+`进行` 只有后接动词才算冗余——所以 R001 用语境正则。这才是 ESLint 式规则，不是敏感词扫描。
 
-## 设计说明
+## 安全 fix（Markdown-safe）
 
-- **为什么不用 vale 原版**：vale 的 existence 规则按空格 token 匹配，中文无空格。
-  - 实测 `总而言之`（句首）能命中，但句内 `非常/大概/真的` 全部漏检。
-  - 中文场景 vale 需先 jieba 分词插空格预处理（行号偏移+维护成本），不如独立脚本干净。
-- **为什么需要词表**：prose smell 的本质是"高频模式检测"（同 code smell 的规则检测层），
-  - 词表可解释、可审计、可扩展——正是 vale 哲学与代码坏味研究交叉的地方。
-- **层级定位**：本工具 = 确定性浅层检测器（等价 Checkstyle 之于代码坏味）；
-  - 语义级坏味（结构性啰嗦、逻辑跳跃）留给 LLM 精判——可做两段式。
+fix 与 review 共用**等长 mask**：代码块、行内代码、URL、引号等受保护内容全部屏蔽。
+
+```
+请不要修改 `总而言之` 行内代码        → 不动
+我把"总而言之"作为例子              → 不动（引号保护）
+总而言之，这个方案很好              → 自动删（高置信）
+综上所述的方案需要讨论               → 不动（定语结构保护）
+```
+
+## Markdown 智能与位置精确
+
+- 等长 mask（内容替换为等长空格）→ **行号列号与原文一一对应**，front matter 存在也不错位
+- 自动跳过：代码块、行内代码、图片、HTML、注释、表格行、标题行
+- 链接：URL 不查，**链接文字照查**
+
+## 两段式设计（v0.2 roadmap）
+
+```
+第一层 deterministic lint（本工具）
+    词法/句法表面模式/重复/长度/Markdown 结构 —— 本地、快、可解释
+
+第二层 semantic review（可选，LLM）
+    逻辑跳跃/段落重复/论证空洞/主语漂移 —— 单独输出
+
+lint warning        = 确定性规则（可复现、可 CI）
+semantic advisory   = LLM 判断（绝不伪装成 lint）
+```
+
+## 配置与扩展
+
+- **profile**：`academic/product/formal/general`（词表分级 + 参数调整）
+- **自定义规则**：编辑 `wenlint/rules.py`（v0.2 迁 `wenlint.toml`）
+- **CI**：`--fail-level warning`，命中即 exit 1
+
+## 开发
+
+```bash
+pip install pytest
+python -m pytest tests/     # 22 个回归测试（mask/行号/fix 安全/CLI）
+```
 
 ## 仓库结构
 
 ```
-zh-prose-smell/
-├── SKILL.md                # Hermes skill 定义（触发条件/执行原则/用法）
-├── scripts/
-│   └── zh_prose_smell.py   # 主脚本（词表 + 检测 + 修复逻辑都在此）
-├── test/                   # 测试样例（markup 陷阱、fix 用例）
-├── LICENSE                 # MIT
+wenlint/
+├── wenlint/
+│   ├── rules.py         # 规则引擎定义（ID/语境/例外/profiles）
+│   ├── engine.py        # 等长 mask + scan + 安全 fix
+│   ├── cli.py           # 命令行
+│   └── __init__.py      # 版本
+├── tests/               # pytest 回归（22 tests）
+├── pyproject.toml       # packaging（wenlint 命令）
+├── LICENSE              # MIT
 └── README.md
 ```
 
