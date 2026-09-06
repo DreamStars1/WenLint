@@ -1,0 +1,6 @@
+<h1 block-id="blkH1">一级标题</h1>
+<p block-id="blkParagraph">普通正文可能含糊。</p>
+<li block-id="blkList">列表正文</li>
+<blockquote block-id="blkQuote">引用正文</blockquote>
+<p block-id="blkLink">见<a href="https://internal.example">链接文字</a>结束。</p>
+<pre block-id="blkCode">code = 1</pre>

@@ -1,0 +1,6 @@
+<h1 block-id="blkA">同名</h1>
+<p block-id="blkABody">第一段。</p>
+<h1 block-id="blkB">同名</h1>
+<p block-id="blkBBody">第二段。</p>
+<h2 block-id="blkNested">子节</h2>
+<p block-id="blkNestedBody">嵌套正文。</p>
