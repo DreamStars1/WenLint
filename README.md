@@ -10,11 +10,11 @@
 pip install jieba
 
 # 检查单个文件或整个目录（.md/.txt/.rst）
-python zh_prose_smell.py 文档.md
-python zh_prose_smell.py 论文调研目录/
+python scripts/zh_prose_smell.py 文档.md
+python scripts/zh_prose_smell.py 论文调研目录/
 
 # JSON 输出（供脚本消费）
-python zh_prose_smell.py 文档.md --json
+python scripts/zh_prose_smell.py 文档.md --json
 ```
 
 ## 输出示例

@@ -1,6 +1,6 @@
 ---
 name: zh-prose-smell
-description: 中文散文坏味检查器——jieba 分词+词表规则，检测文档中的 AI 腔/废话填充、模糊词、空洞强调、重复词、超长句。写中文文档（PRD/论文/给医生的材料/任何 markdown）后或检查 AI 生成内容时使用。用法：python zh_prose_smell.py <文件或目录>。
+description: 中文散文坏味检查器——jieba 分词+词表规则，检测文档中的 AI 腔/废话填充、模糊词、空洞强调、重复词、超长句。写中文文档（PRD/论文/给医生的材料/任何 markdown）后或检查 AI 生成内容时使用。用法：python scripts/zh_prose_smell.py <文件或目录>。
 ---
 
 # zh-prose-smell：中文散文坏味检查器
@@ -24,11 +24,11 @@ pip install jieba        # 唯一依赖（中文分词）
 
 ```bash
 # 单文件或目录（.md/.txt/.rst）
-python <skill_dir>/zh_prose_smell.py 文档.md
-python <skill_dir>/zh_prose_smell.py <目录>/
+python <skill_dir>/scripts/zh_prose_smell.py 文档.md
+python <skill_dir>/scripts/zh_prose_smell.py <目录>/
 
 # JSON 输出（脚本消费）
-python <skill_dir>/zh_prose_smell.py 文档.md --json
+python <skill_dir>/scripts/zh_prose_smell.py 文档.md --json
 ```
 
 输出格式（vale 风格）：`文件:行:列  级别  类别: 命中的词`
