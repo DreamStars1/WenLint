@@ -134,15 +134,18 @@ def _load_texts(files):
 
 
 def _display_path(fp):
-    """文件路径的展示形式（绝对路径转相对路径）。
+    """文件路径的展示形式（绝对路径转相对路径；相对更长时用绝对）。
 
     Args:
-        fp: 文件绝对路径。
+        fp: 文件路径。
 
     Returns:
-        str：相对 cwd 的路径；非绝对路径原样返回。
+        str：展示用路径。
     """
-    return os.path.relpath(fp) if os.path.isabs(fp) else fp
+    if not os.path.isabs(fp):
+        return fp
+    rel = os.path.relpath(fp)
+    return rel if len(rel) <= len(fp) else fp
 
 
 # ============ review 入口（业务步骤编排）============

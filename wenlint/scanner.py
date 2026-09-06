@@ -161,6 +161,16 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
 
     findings += findings_900
 
+    # 同句同规则合并：同一行同一规则多次命中只保留第一条（如"处置闭环/反馈闭环"）
+    seen, merged = set(), []
+    for f in findings:
+        key = (f["line"], f["rule_id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(f)
+    findings = merged
+
     # 补充规则审查提示（review_hint）与命中句（sentence，供 Skill 消费）
     for f in findings:
         rule = by_id(f["rule_id"])

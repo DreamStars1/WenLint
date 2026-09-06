@@ -71,6 +71,8 @@ def mask_line(line, protect_quotes=False):
     masked = re.sub(r"<!--.*?-->", lambda m: _blank(m.group(0)), masked, flags=re.DOTALL)
     # 删除线
     masked = re.sub(r"~~[^~\n]*~~", lambda m: _blank(m.group(0)), masked)
+    # 括号内内容（（）()）：注释/示例/领域术语说明等元语境，不参与命中
+    masked = re.sub(r"[（(][^（）()\n]*[）)]", lambda m: _blank(m.group(0)), masked)
     if protect_quotes:
         # 引号内内容（中文引号/英文引号），防 fix 误删示例词/引用
         masked = re.sub(r"[“”\"'][^“”\"'\n]*[“”\"']",
