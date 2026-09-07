@@ -139,3 +139,19 @@ def test_mapping_fields_copy_input_and_reject_item_assignment():
 
     assert report.to_dict()["source"]["document_id"] == "DocToken"
     assert result.to_dict()["details"]["kind"] == "ok"
+
+
+def test_bound_finding_rule_returns_id_or_empty_string():
+    location = FindingLocation(
+        block_id=None,
+        block_url=None,
+        node_path=None,
+        mapping_status="unmapped",
+        writable=False,
+        reason="unmapped",
+    )
+    present = BoundFinding(finding={"rule": "H002"}, section=None, location=location)
+    missing = BoundFinding(finding={}, section=None, location=location)
+    assert present.rule == "H002"
+    assert missing.rule == ""
+    assert "Returns:" in (BoundFinding.rule.__doc__ or "")

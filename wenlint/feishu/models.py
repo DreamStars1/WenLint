@@ -147,7 +147,11 @@ class BoundFinding:
 
     @property
     def rule(self) -> str:
-        """Return the WenLint rule id from the underlying finding."""
+        """Return the WenLint rule id from the underlying finding.
+
+        Returns:
+            Rule id as a string, or ``""`` when ``finding`` omits ``rule``.
+        """
         return str(self.finding.get("rule", ""))
 
 
