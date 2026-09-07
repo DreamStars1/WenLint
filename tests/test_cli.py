@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 
-from wenlint.cli import main
+from wenlint.cli import _collect_files, main
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 
@@ -27,6 +27,18 @@ def run_cli(args, cwd=None):
 def test_clean_file_exit_zero():
     r = run_cli(["tests/fixtures/smoke.md"])
     assert r.returncode == 0
+
+
+def test_non_utf8_file_fails_without_successful_empty_json(tmp_path):
+    p = tmp_path / "invalid.md"
+    p.write_bytes(b"\xff\xfe\xfa")
+
+    r = run_cli([str(p), "--json"])
+
+    assert r.returncode == 3
+    assert r.stdout.strip() != "[]"
+    assert "无法读取" in r.stderr
+    assert str(p) in r.stderr
 
 
 def test_fail_level_warning_exits_1(tmp_path):
@@ -85,10 +97,8 @@ def test_wenlintignore_trailing_slash_works(tmp_path, monkeypatch):
         "总而言之，故意坏味。\n", encoding="utf-8")
     (tmp_path / "doc.md").write_text("正文没问题。\n", encoding="utf-8")
     (tmp_path / ".wenlintignore").write_text("tests/\n", encoding="utf-8")
-    r = run_cli(["--json", str(tmp_path)])
-    data = json.loads(r.stdout)
-    assert all("tests/" not in d["file"] for d in data), \
-        "tests/ 目录应被忽略"
+    files = _collect_files([str(tmp_path)])
+    assert files == [str(tmp_path / "doc.md")], "tests/ 目录应被忽略"
 
 
 def test_wenlintignore_relative_to_project_root(tmp_path):

@@ -5,6 +5,9 @@ __pycache__/
 
 .worktrees/
 
+# Local WenLint review feedback may contain document excerpts.
+**/.wenlint/feedback.jsonl
+
 
 *.egg-info/
 dist-test/

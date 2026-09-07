@@ -12,3 +12,4 @@ def test_pyproject_declares_supported_python_and_scripts():
     assert data["project"]["optional-dependencies"]["test"] == ["pytest>=8.4,<10"]
     assert data["project"]["scripts"]["wenlint"] == "wenlint.cli:main"
     assert data["project"]["scripts"]["wenlint-feishu"] == "wenlint.feishu.cli:main"
+    assert data["project"]["scripts"]["wenlint-feedback"] == "wenlint.feedback:main"

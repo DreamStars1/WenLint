@@ -24,6 +24,7 @@ test = ["pytest>=8.4,<10"]
 [project.scripts]
 wenlint = "wenlint.cli:main"
 wenlint-feishu = "wenlint.feishu.cli:main"
+wenlint-feedback = "wenlint.feedback:main"
 
 [tool.setuptools]
 packages = ["wenlint", "wenlint.feishu"]

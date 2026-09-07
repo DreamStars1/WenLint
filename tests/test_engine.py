@@ -104,6 +104,44 @@ def test_s001_bold_markers_not_counted():
     assert not [h for h in hits if h["rule_id"] == "S001"], "粗体标记不应计入句长"
 
 
+def test_s001_masked_inline_code_not_counted():
+    """行内代码被 mask 成空格后不能虚增正文句长。"""
+    body = "这是一段恰好需要保持在五十字以内的中文正文用来验证代码掩码不会导致长句误报"
+    text = f"{body} `{'x' * 100}`。\n"
+    hits = scan_text(text, profile="instruction")
+    assert not [h for h in hits if h["rule_id"] == "S001"]
+
+
+def test_s001_leading_spaces_keep_original_column():
+    """段落行首空格不应在聚合时丢失，定位仍指向原文正文起点。"""
+    body = "这是一句需要超过五十字阈值的中文长句用于验证行首空格之后的位置映射仍然精确无误所以继续补充足够多的正文内容"
+    hits = [h for h in scan_text(f"  {body}。\n", profile="instruction")
+            if h["rule_id"] == "S001"]
+    assert len(hits) == 1
+    assert (hits[0]["line"], hits[0]["col"]) == (1, 3)
+
+
+def test_s001_cross_line_sentence_keeps_full_original_context():
+    """跨行长句的 sentence 应包含整句原文，而非只保留命中首行。"""
+    first = "这是一句跨行书写的中文长句用于验证上下文能够完整保留"
+    second = "第二行继续补充足够多的正文内容直到总长度超过五十字阈值并在这里结束。"
+    hits = [h for h in scan_text(f"{first}\n{second}\n", profile="instruction")
+            if h["rule_id"] == "S001"]
+    assert len(hits) == 1
+    assert hits[0]["sentence"] == f"{first}\n{second}"
+
+
+def test_s001_sentence_start_after_soft_wrap_keeps_first_column():
+    """软换行后的新句应定位到第二行第一列，不受拼接换行影响。"""
+    first = "第一句很短。"
+    second = "甲乙丙丁戊己庚辛壬癸" * 6 + "。"
+    hits = [h for h in scan_text(f"{first}\n{second}\n", profile="instruction")
+            if h["rule_id"] == "S001"]
+    assert len(hits) == 1
+    assert (hits[0]["line"], hits[0]["col"]) == (2, 1)
+    assert hits[0]["sentence"] == second
+
+
 # ===== 审查 P0 回归：Markdown scope 行为 =====
 
 def test_heading_not_reported():
@@ -118,6 +156,51 @@ def test_fenced_code_not_reported():
     text = "正文。\n```\n总而言之 在代码里\n```\n正文二。\n"
     hits = f(text)
     assert not [h for h in hits if h[2] == "C001"]
+
+
+def test_short_backtick_fence_does_not_close_long_fence():
+    """四反引号围栏不能被内部三反引号提前关闭。"""
+    text = ("````markdown\n"
+            "总而言之，代码内容。\n"
+            "```\n"
+            "总而言之，仍是代码内容。\n"
+            "````\n"
+            "正文总而言之，需要检查。\n")
+    hits = [h for h in f(text) if h[2] == "C001"]
+    assert hits == [(6, 3, "C001")]
+
+
+def test_different_fence_character_does_not_close_fence():
+    """波浪线不能关闭反引号围栏。"""
+    text = ("```text\n"
+            "~~~\n"
+            "总而言之，仍是代码内容。\n"
+            "```\n"
+            "正文总而言之，需要检查。\n")
+    hits = [h for h in f(text) if h[2] == "C001"]
+    assert hits == [(5, 3, "C001")]
+
+
+def test_fence_with_trailing_info_does_not_close_fence():
+    """闭围栏标记后的非空白内容不能提前关闭代码块。"""
+    text = ("````markdown\n"
+            "````python\n"
+            "总而言之，仍是代码内容。\n"
+            "````\n"
+            "正文总而言之，需要检查。\n")
+    hits = [h for h in f(text) if h[2] == "C001"]
+    assert hits == [(5, 3, "C001")]
+
+
+def test_s001_masked_only_line_does_not_split_prose_sentence():
+    """仅含受保护内容的软换行不能把一个长句拆成两个短句。"""
+    first = "甲乙丙丁戊己庚辛壬癸" * 3
+    second = "甲乙丙丁戊己庚辛壬癸" * 3 + "。"
+    text = f"{first}\n`{'x' * 100}`\n{second}\n"
+    hits = [h for h in scan_text(text, profile="instruction")
+            if h["rule_id"] == "S001"]
+    assert len(hits) == 1
+    assert hits[0]["sentence"] == f"{first}\n`{'x' * 100}`\n{second}"
 
 
 def test_indented_code_not_reported():

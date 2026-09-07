@@ -40,7 +40,8 @@ def main(argv=None):
         argv: 命令行参数列表；None 时用 sys.argv[1:]。
 
     Returns:
-        int：进程退出码（0 通过 / 1 有 ≥fail-level 命中 / 2 无输入文件）。
+        int：进程退出码（0 通过 / 1 有 ≥fail-level 命中 / 2 无输入文件 /
+        3 选中文件无法读取或解码）。
     """
     args = _parse_args(argv)
     files = _collect_files(args.path)
@@ -166,7 +167,10 @@ def _ignored(fp, patterns, base=None):
     except ValueError:
         # Cross-volume paths (Windows) cannot be relativized; keep absolute form.
         rel = fp
+    # Normalize separators so patterns like "tests/" match on Windows.
+    rel = rel.replace("\\", "/")
     for pat in patterns:
+        pat = pat.replace("\\", "/")
         if pat.endswith("/"):
             if rel.startswith(pat):
                 return True
@@ -183,16 +187,19 @@ def _load_texts(files):
         files: 文件路径列表。
 
     Returns:
-        dict[str, str]：{fp: text}；不可读/非 UTF-8 文件跳过并输出告警。
+        tuple[dict[str, str], list[str]]：({fp: text}, 失败路径列表)。
+        不可读/非 UTF-8 文件记入失败列表并输出告警，不 silently 当成空成功。
     """
     texts = {}
+    errors = []
     for fp in files:
         try:
             with open(fp, encoding="utf-8") as fh:
                 texts[fp] = fh.read()
         except (OSError, UnicodeDecodeError) as e:
             print(f"!! 无法读取 {fp}: {e}", file=sys.stderr)
-    return texts
+            errors.append(fp)
+    return texts, errors
 
 
 def _display_path(fp):
@@ -223,9 +230,12 @@ def _run_review(files, args):
         args: 解析后的命令行参数。
 
     Returns:
-        int：退出码（--fail-level 生效时按最重命中判定）。
+        int：退出码（读失败为 3；--fail-level 生效时按最重命中判定）。
     """
-    texts = _load_texts(files)
+    texts, load_errors = _load_texts(files)
+    if load_errors:
+        # Incomplete run: do not emit a successful empty JSON report.
+        return 3
     results = _scan_all(texts, args.profile)
     findings = [f for _, fs in results for f in fs]
     if args.json:

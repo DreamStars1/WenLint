@@ -112,19 +112,23 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
         if rid == "S001":   # 超长句：聚合连续散文段落后按句读判长
             # （vale scope 借鉴；剥 ** 等标记；跨行精确定位，不吞同段多命中）
             max_len = params.get("S001", {}).get("max_len", rule.get("max_len", 80))
-            for _, para, bounds in _collect_paragraphs(masked, raw_lines):
+            for _, para, raw_para, bounds in _collect_paragraphs(masked, raw_lines):
                 cursor = 0
                 for seg in re.split(r"(?<=[。！？!?；;])", para):
                     lead = len(seg) - len(seg.lstrip())   # 句前空白
                     seg_stripped = seg.strip()
+                    # 剥 Markdown 标记；空白（含 mask 占位与软换行）不计句长
                     clean = re.sub(r"\*\*|__|\*|_|`", "", seg_stripped)
-                    if len(clean) > max_len and _cn_ratio(clean) >= 0.30:
+                    measurable = re.sub(r"\s+", "", clean)
+                    if len(measurable) > max_len and _cn_ratio(measurable) >= 0.30:
                         ln, col = _locate(bounds, cursor + lead)
+                        raw_seg = raw_para[cursor:cursor + len(seg)]
                         findings.append({
                             "line": ln, "col": col, "rule_id": rid,
                             "severity": severity, "category": rule["category"],
                             "match": "", "message": rule["message"].format(
-                                len=len(clean), max=max_len),
+                                len=len(measurable), max=max_len),
+                            "sentence": raw_seg.strip(),
                         })
                     cursor += len(seg)
             continue
@@ -179,9 +183,12 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
     findings = merged
 
     # 补充规则审查提示（review_hint）与命中句（sentence，供 Skill 消费）
+    # S001 已写入跨行完整句，此处不覆盖。
     for f in findings:
         rule = by_id(f["rule_id"])
         f["review_hint"] = rule.get("review_hint", "") if rule else ""
+        if f.get("sentence"):
+            continue
         ln = f["line"]
         if 1 <= ln <= len(raw_lines):
             f["sentence"] = _extract_sentence(raw_lines[ln - 1], f["col"])
@@ -196,33 +203,41 @@ def _collect_paragraphs(masked_lines, raw_lines):
     """聚合连续散文段落行为段落，附带字符偏移 → 原文位置的行界映射。
 
     Markdown 中一个段落可被手动换行拆成多行；若逐行判句长，
-    拆行后每段都 < 阈值就会漏报。这里把连续 paragraph 行拼接后统一切句，
-    并记录每个字符偏移对应的 (line, col)，供超长句精确定位（不吞多命中）。
+    拆行后每段都 < 阈值就会漏报。这里把连续 paragraph 行用换行拼接后统一切句，
+    并保留行首空白以便列号映射回原文；同时保留等长原文拼接供 sentence 上下文。
 
     Args:
         masked_lines: mask 后各行。
-        raw_lines: 原文各行（用于 line_role 判定）。
+        raw_lines: 原文各行（用于 line_role 判定与 sentence 原文）。
 
     Returns:
-        list[tuple[int, str, list]]：[(段落起始行号, 拼接文本, 行界)]。
+        list[tuple[int, str, str, list]]：
+        [(段落起始行号, masked 拼接, 原文拼接, 行界)]。
         行界 = [(累计字符数, 行号), ...]，每行拼接后追加一条；
         给定字符偏移 pos，落在 [prev_cum, cum) 的即为该行，
         行内列号 = pos - prev_cum + 1。
     """
     paras = []
-    start_ln, buf, bounds = 0, "", []
+    start_ln, buf, raw_buf, bounds = 0, "", "", []
     for ln, (mline, raw) in enumerate(zip(masked_lines, raw_lines), 1):
-        if line_role(raw) == "paragraph" and mline.strip():
+        # A prose line containing only protected Markdown (for example inline
+        # code) is still part of its surrounding paragraph.  Use the raw line
+        # to distinguish it from an actual blank line, while the masked text
+        # continues to contribute zero measurable characters.
+        if line_role(raw) == "paragraph" and raw.strip():
             if not buf:
                 start_ln = ln
-            buf += mline.strip()
+                buf, raw_buf = mline, raw
+            else:
+                buf += "\n" + mline
+                raw_buf += "\n" + raw
             bounds.append((len(buf), ln))
         else:
             if buf:
-                paras.append((start_ln, buf, bounds))
-            start_ln, buf, bounds = 0, "", []
+                paras.append((start_ln, buf, raw_buf, bounds))
+            start_ln, buf, raw_buf, bounds = 0, "", "", []
     if buf:
-        paras.append((start_ln, buf, bounds))
+        paras.append((start_ln, buf, raw_buf, bounds))
     return paras
 
 
@@ -240,7 +255,10 @@ def _locate(bounds, pos):
     for cum, ln in bounds:
         if pos < cum:
             return ln, pos - prev_cum + 1
-        prev_cum, prev_ln = cum, ln
+        # Paragraph lines are joined with one synthetic newline.  It belongs
+        # to neither source line, so the next line starts one character after
+        # the previous cumulative boundary.
+        prev_cum, prev_ln = cum + 1, ln
     return prev_ln, pos - prev_cum + 1
 
 

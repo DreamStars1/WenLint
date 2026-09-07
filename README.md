@@ -152,6 +152,23 @@ ASK      资料也不足，需要作者确认（绝不在无依据时删"可能"
 按规则统计 KEEP 比例。某条规则大部分命中都是 KEEP → 降级 candidate 或移除。
 这个反馈数据比继续扩充词表更有价值。
 
+### 本地反馈记录（无网络）
+
+`wenlint-feedback` 把四分类结果追加到本地 JSONL，**不上传、无遥测**，仅供本机统计：
+
+```bash
+wenlint-feedback record \
+  --decision KEEP --rule H002 --file docs/prd.md --line 18 --column 7 \
+  --text 可能 --reason "属于合理的学术审慎" --profile academic \
+  --output .wenlint/feedback.jsonl
+
+wenlint-feedback stats --input .wenlint/feedback.jsonl --json
+```
+
+每条记录含 `schema_version`、`decision`、`rule`、`file`、`line`、`column`、
+`text`、`reason`、`profile`、`recorded_at`（UTC，`Z` 后缀）。
+`decision` 仅允许 `KEEP` / `REWRITE` / `VERIFY` / `ASK`。
+
 ## 配置
 
 - **profile**：`academic/product/formal/general`（词表分级 + 参数调整）
@@ -174,10 +191,11 @@ wenlint/
 │   ├── scanner.py       # 扫描引擎（mask 后规则分发 + 语言守卫）
 │   ├── markdown.py      # Markdown 保护层（行角色分类 + 等长 mask）
 │   ├── cli.py           # 本地文件路由 + review 步骤编排
+│   ├── feedback.py      # 本地四分类反馈 JSONL（无网络）
 │   ├── feishu/          # 飞书 Docx/Wiki 检查与安全写回（wenlint/feishu/）
 │   └── __init__.py      # 版本
 ├── tests/               # pytest 回归（本地 + 飞书）
-├── pyproject.toml       # packaging（wenlint / wenlint-feishu 命令）
+├── pyproject.toml       # packaging（wenlint / wenlint-feishu / wenlint-feedback）
 ├── LICENSE              # MIT
 └── README.md
 ```

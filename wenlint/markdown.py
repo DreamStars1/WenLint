@@ -96,6 +96,18 @@ def _strip_inline_code(line):
     return re.sub(r"`[^`\n]*`", lambda m: _blank(m.group(0)), line)
 
 
+def _fence_marker(line):
+    """解析围栏标记：返回 (字符, 长度, 后缀)，非围栏则 None。
+
+    CommonMark：关闭围栏须同字符，且长度 ≥ 开围栏；较短围栏不能提前关闭较长围栏。
+    """
+    match = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+    if not match:
+        return None
+    run = match.group(1)
+    return run[0], len(run), match.group(2)
+
+
 def mask_text(text):
     """整段 mask：front matter/代码块/缩进代码/多行注释 整块屏蔽。
 
@@ -113,6 +125,8 @@ def mask_text(text):
     lines = text.split("\n")
     out = []
     in_fence = False        # ``` 围栏内
+    fence_char = None       # 开围栏字符（` 或 ~）
+    fence_len = 0           # 开围栏长度；关闭须 ≥ 此长度且同字符
     in_indent = False       # 缩进代码块内
     in_comment = False      # 多行 HTML 注释内
     in_front = 0            # front matter 深度（0/1/2）
@@ -122,16 +136,21 @@ def mask_text(text):
 
         # 围栏内：整行屏蔽（代码内容不参与任何注释/正文识别）
         if in_fence:
-            if s.startswith(("```", "~~~")):
+            marker = _fence_marker(line)
+            if (marker and marker[0] == fence_char and marker[1] >= fence_len
+                    and not marker[2].strip()):
                 out.append(line)
                 in_fence = False
+                fence_char, fence_len = None, 0
             else:
                 out.append(_blank(line))
             continue
         # 围栏开关
-        if s.startswith(("```", "~~~")):
+        marker = _fence_marker(line)
+        if marker:
             out.append(line)
             in_fence = True
+            fence_char, fence_len = marker[:2]
             continue
 
         # 缩进代码块：文件开头或空行后出现 4 空格/制表符缩进
