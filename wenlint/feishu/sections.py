@@ -2,7 +2,8 @@
 
 Fingerprints ignore volatile block ids and revisions so collaborators renaming
 ids do not invalidate an unchanged chapter, while any text or semantic
-structure change does.
+structure change does. Canonical encoding escapes text/attrs and marks child
+boundaries so literal markup characters cannot collide with real elements.
 """
 
 from __future__ import annotations
@@ -154,6 +155,42 @@ def locate_section(snapshot: DocumentSnapshot, locator: str) -> Section:
     return matches[0]
 
 
+def owning_section(snapshot: DocumentSnapshot, block_id: str) -> Section:
+    """Return the single writeback owner for ``block_id``.
+
+    Nested headings produce overlapping ``block_ids`` ranges: a parent chapter
+    includes child blocks. The writeback owner is the deepest matching
+    hierarchical section (highest level, then longest locator).
+
+    Args:
+        snapshot: Document snapshot containing sections.
+        block_id: Target block id.
+
+    Returns:
+        The unique deepest owning ``Section``.
+
+    Raises:
+        SectionError: If no section contains the block, or more than one
+            section ties for deepest ownership (fail-closed).
+    """
+    matches = [section for section in snapshot.sections if block_id in section.block_ids]
+    if not matches:
+        raise SectionError(
+            "block is not owned by any section",
+            kind="missing_section",
+        )
+    deepest_level = max(section.level for section in matches)
+    deepest = [section for section in matches if section.level == deepest_level]
+    max_locator_len = max(len(section.locator) for section in deepest)
+    owners = [section for section in deepest if len(section.locator) == max_locator_len]
+    if len(owners) != 1:
+        raise SectionError(
+            "block ownership is ambiguous across sections",
+            kind="ambiguous_section",
+        )
+    return owners[0]
+
+
 def section_fingerprint(element: Element) -> str:
     """Hash one element's canonical XML form.
 
@@ -181,13 +218,20 @@ def _fingerprint_elements(elements: list[Element]) -> str:
 
 
 def _canonical_xml(element: Element) -> str:
-    """Serialize an element with volatile ids removed and attributes sorted.
+    """Serialize an element with unambiguous structure and escaped payloads.
+
+    Encoding covers local tag, sorted non-volatile attributes, element text,
+    each child subtree, and each child tail. Text and attribute values are
+    escaped so literal ``&lt;b&gt;x&lt;/b&gt;`` cannot collide with a real
+    ``<b>`` child. Child boundaries use explicit markers so text/tail splits
+    remain distinct. Only documented volatile block/revision ids are omitted;
+    semantic resource attrs such as ``id`` are preserved.
 
     Args:
         element: Element to canonicalize.
 
     Returns:
-        Canonical XML string.
+        Canonical string suitable for hashing.
     """
     tag = _local(element.tag)
     attrs = {
@@ -195,20 +239,39 @@ def _canonical_xml(element: Element) -> str:
         for key, value in element.attrib.items()
         if key not in _VOLATILE_ATTRS and not key.startswith("_wenlint")
     }
-    attr_text = "".join(f' {key}="{attrs[key]}"' for key in sorted(attrs))
-    children = list(element)
-    if not children and not element.text and not element.tail:
-        return f"<{tag}{attr_text}></{tag}>"
-
-    parts = [f"<{tag}{attr_text}>"]
-    if element.text:
-        parts.append(element.text)
-    for child in children:
+    attr_text = "".join(
+        f" @{_escape(key)}={_escape(attrs[key])}" for key in sorted(attrs)
+    )
+    parts = [f"<{tag}{attr_text}>", _escape(element.text or "")]
+    for child in element:
+        parts.append("(")
         parts.append(_canonical_xml(child))
-        if child.tail:
-            parts.append(child.tail)
+        parts.append("^")
+        parts.append(_escape(child.tail or ""))
+        parts.append(")")
     parts.append(f"</{tag}>")
     return "".join(parts)
+
+
+def _escape(value: str) -> str:
+    """Escape delimiter and markup-significant characters in fingerprint payloads.
+
+    Args:
+        value: Raw attribute value, text, or tail.
+
+    Returns:
+        Escaped string that cannot introduce false tag or boundary markers.
+    """
+    return (
+        value.replace("\\", "\\\\")
+        .replace("<", "\\<")
+        .replace(">", "\\>")
+        .replace("(", "\\(")
+        .replace(")", "\\)")
+        .replace("^", "\\^")
+        .replace("@", "\\@")
+        .replace("=", "\\=")
+    )
 
 
 def _local(tag: str) -> str:

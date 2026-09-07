@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from wenlint.feishu.document import parse_document_ref
 from wenlint.feishu.models import Patch
 from wenlint.feishu.projection import (
@@ -232,3 +234,30 @@ def test_apply_conflict_before_write_exit_4(tmp_path):
     assert result.returncode == 4
     payload = json.loads(result.stdout)
     assert payload["status"] == "conflict"
+
+
+def test_invalid_profile_exits_argparse_before_lark_client(monkeypatch):
+    """Invalid ``--profile`` must fail at argparse exit 2 without probing Lark."""
+    from wenlint.feishu import cli as feishu_cli
+
+    calls: list[str] = []
+
+    class BoomClient:
+        def __init__(self, *args, **kwargs):
+            calls.append("constructed")
+            raise AssertionError("LarkClient must not be constructed")
+
+        def probe(self):
+            calls.append("probe")
+            raise AssertionError("probe must not run")
+
+    monkeypatch.setattr(feishu_cli, "LarkClient", BoomClient)
+    with pytest.raises(SystemExit) as exc:
+        feishu_cli.main([DOC_URL, "--profile", "not-a-real-profile"])
+    assert exc.value.code == 2
+    assert calls == []
+
+    with pytest.raises(SystemExit) as exc2:
+        feishu_cli.main(["inspect", DOC_URL, "--profile", "also-invalid"])
+    assert exc2.value.code == 2
+    assert calls == []

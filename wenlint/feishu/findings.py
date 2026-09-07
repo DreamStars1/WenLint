@@ -16,6 +16,8 @@ from wenlint.feishu.models import (
     Section,
     SourceSpan,
 )
+from wenlint.feishu.sections import SectionError, owning_section
+
 
 
 def bind_findings(
@@ -352,20 +354,21 @@ def _section_for_block(snapshot: DocumentSnapshot, block_id: str) -> Section | N
     """Find the deepest section that owns ``block_id``.
 
     Nested headings produce overlapping fingerprint ranges (parent includes
-    child blocks). Finding binding must still pick one chapter: the deepest
-    matching section by heading level, then longest locator.
+    child blocks). Finding binding must still pick one chapter: the unique
+    writeback owner from :func:`owning_section`. Missing or ambiguous ownership
+    stays report-only (``None``).
 
     Args:
         snapshot: Document snapshot.
         block_id: Block id to locate.
 
     Returns:
-        Owning section or ``None`` when missing.
+        Owning section or ``None`` when missing or ambiguous.
     """
-    matches = [section for section in snapshot.sections if block_id in section.block_ids]
-    if not matches:
+    try:
+        return owning_section(snapshot, block_id)
+    except SectionError:
         return None
-    return max(matches, key=lambda section: (section.level, len(section.locator)))
 
 
 def _duplicate_source_elsewhere(

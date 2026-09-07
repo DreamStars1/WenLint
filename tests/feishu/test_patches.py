@@ -155,3 +155,42 @@ def test_empty_or_equal_before_after_rejected(snapshot):
     with pytest.raises(PatchValidationError) as exc:
         validate_patches(snapshot, plan)
     assert exc.value.kind == "noop_patch"
+
+
+def test_parent_section_manifest_cannot_write_child_owned_block():
+    xml = (
+        '<h1 block-id="h1">一级</h1>'
+        '<p block-id="lead">导言。</p>'
+        '<h2 block-id="h2">二级</h2>'
+        '<p block-id="child">子节正文可能含糊。</p>'
+    )
+    snapshot = project_xml(xml, REF, 4)
+    parent = next(section for section in snapshot.sections if section.locator == "一级[1]")
+    child_body = "child"
+    assert child_body in parent.block_ids
+    plan = ApprovedSectionPlan(
+        document_id="DocToken",
+        section_locator=parent.locator,
+        initial_fingerprint=parent.fingerprint,
+        base_revision=4,
+        approved_patch_ids=("p1",),
+        expected_fingerprints=("sha256:x",),
+        patches=(
+            Patch(
+                patch_id="p1",
+                section_locator=parent.locator,
+                section_fingerprint=parent.fingerprint,
+                block_id=child_body,
+                node_path=(),
+                source_start=4,
+                source_end=6,
+                before="可能",
+                after="已经",
+                rule_id="H002",
+                rationale="parent must not own child body",
+            ),
+        ),
+    )
+    with pytest.raises(PatchValidationError) as exc:
+        validate_patches(snapshot, plan)
+    assert exc.value.kind == "block_outside_section"

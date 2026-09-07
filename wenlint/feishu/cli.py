@@ -25,6 +25,7 @@ from wenlint.feishu.patches import (
 )
 from wenlint.feishu.projection import XmlSafetyError
 from wenlint.feishu.sections import SectionError
+from wenlint.profiles import PROFILES
 
 _LEVEL_RANK = {"error": 3, "warning": 2, "suggestion": 1, "candidate": 0}
 
@@ -207,7 +208,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         shortcut = argparse.ArgumentParser(prog="wenlint-feishu", add_help=False)
         shortcut.add_argument("url")
         shortcut.add_argument("--json", action="store_true")
-        shortcut.add_argument("--profile", default="general")
+        shortcut.add_argument(
+            "--profile",
+            default="general",
+            choices=sorted(PROFILES),
+            help="WenLint profile",
+        )
         shortcut.add_argument(
             "--fail-level",
             choices=["error", "warning", "suggestion"],
@@ -229,7 +235,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     inspect_p = sub.add_parser("inspect", help="Fetch and scan a Feishu document")
     inspect_p.add_argument("url", help="HTTPS Docx or Wiki URL")
     inspect_p.add_argument("--json", action="store_true", help="Emit JSON on stdout")
-    inspect_p.add_argument("--profile", default="general", help="WenLint profile")
+    inspect_p.add_argument(
+        "--profile",
+        default="general",
+        choices=sorted(PROFILES),
+        help="WenLint profile",
+    )
     inspect_p.add_argument(
         "--fail-level",
         choices=["error", "warning", "suggestion"],

@@ -36,7 +36,7 @@ from wenlint.feishu.projection import (
     replace_node_text,
     resolve_text_target,
 )
-from wenlint.feishu.sections import SectionError, locate_section
+from wenlint.feishu.sections import SectionError, locate_section, owning_section
 from wenlint.scanner import scan_text
 
 _MANIFEST_LIMIT = 1 * 1024 * 1024
@@ -274,7 +274,9 @@ def validate_patches(
         The validated patch tuple.
 
     Raises:
-        PatchValidationError: On overlap, mismatch, or unsupported edits.
+        PatchValidationError: On overlap, mismatch, unsupported edits, or when
+            a patch targets a block whose writeback owner is not the approved
+            section (deepest hierarchical owner via ``owning_section``).
         SectionError: When the section locator is missing or ambiguous.
     """
     section = locate_section(snapshot, plan.section_locator)
@@ -308,7 +310,14 @@ def validate_patches(
                 "patch source offsets are invalid",
                 kind="invalid_offsets",
             )
-        if patch.block_id not in section.block_ids:
+        try:
+            owner = owning_section(snapshot, patch.block_id)
+        except SectionError as exc:
+            raise PatchValidationError(
+                "patch block is outside the approved section",
+                kind="block_outside_section",
+            ) from exc
+        if owner.locator != plan.section_locator:
             raise PatchValidationError(
                 "patch block is outside the approved section",
                 kind="block_outside_section",
@@ -970,7 +979,8 @@ def _remap_patches(
         Patches with refreshed block ids.
 
     Raises:
-        PatchValidationError: When a patch cannot be uniquely remapped.
+        PatchValidationError: When a patch cannot be uniquely remapped, or the
+            remapped block's writeback owner is not ``section_locator``.
     """
     section = locate_section(snapshot, section_locator)
     remapped: list[Patch] = []
@@ -993,6 +1003,18 @@ def _remap_patches(
             raise PatchValidationError(
                 "patch could not be uniquely remapped on the latest snapshot",
                 kind="remap_failed",
+            )
+        try:
+            owner = owning_section(snapshot, candidates[0])
+        except SectionError as exc:
+            raise PatchValidationError(
+                "remapped patch block is outside the approved section",
+                kind="block_outside_section",
+            ) from exc
+        if owner.locator != section_locator:
+            raise PatchValidationError(
+                "remapped patch block is outside the approved section",
+                kind="block_outside_section",
             )
         remapped.append(
             Patch(

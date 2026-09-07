@@ -8,9 +8,11 @@ import pytest
 from wenlint.feishu.document import DocumentRefError, parse_document_ref
 from wenlint.feishu.models import (
     ApprovedSectionPlan,
+    ApplyResult,
     BoundFinding,
     DocumentRef,
     DocumentSnapshot,
+    FindingLocation,
     InspectionReport,
     Patch,
     Section,
@@ -86,3 +88,54 @@ def test_source_span_allows_synthetic_nulls():
     assert span.node_path is None
     with pytest.raises(dataclasses.FrozenInstanceError):
         span.writable = True  # type: ignore[misc]
+
+
+def test_mapping_fields_copy_input_and_reject_item_assignment():
+    finding_src = {"rule": "H002", "text": "可能"}
+    source_src = {"document_id": "DocToken", "revision_id": 1}
+    details_src = {"kind": "ok", "count": 1}
+
+    bound = BoundFinding(
+        finding=finding_src,
+        section=None,
+        location=FindingLocation(
+            block_id=None,
+            block_url=None,
+            node_path=None,
+            mapping_status="unmapped",
+            writable=False,
+            reason="unmapped",
+        ),
+    )
+    report = InspectionReport(
+        ok=True,
+        source=source_src,
+        sections=(),
+        findings=(),
+    )
+    result = ApplyResult(
+        status="success",
+        applied_patch_ids=(),
+        unapplied_patch_ids=(),
+        reconfirm_patch_ids=(),
+        revision_id=1,
+        message="ok",
+        details=details_src,
+    )
+
+    finding_src["rule"] = "MUTATED"
+    source_src["document_id"] = "MUTATED"
+    details_src["kind"] = "MUTATED"
+    assert bound.finding["rule"] == "H002"
+    assert report.source["document_id"] == "DocToken"
+    assert result.details["kind"] == "ok"
+
+    with pytest.raises(TypeError):
+        bound.finding["rule"] = "x"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        report.source["document_id"] = "x"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        result.details["kind"] = "x"  # type: ignore[index]
+
+    assert report.to_dict()["source"]["document_id"] == "DocToken"
+    assert result.to_dict()["details"]["kind"] == "ok"

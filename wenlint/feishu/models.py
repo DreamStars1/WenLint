@@ -1,12 +1,15 @@
 """Immutable Feishu domain models shared by inspect and apply paths.
 
 Public models are frozen so inspection and writeback never mutate a shared
-snapshot, reference, or approved plan in place.
+snapshot, reference, or approved plan in place. Mapping fields additionally
+copy caller input into ``MappingProxyType`` so item assignment cannot mutate
+serialized payloads in place.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Literal, Mapping, Sequence
 
 
@@ -134,6 +137,14 @@ class BoundFinding:
     section: Section | None
     location: FindingLocation
 
+    def __post_init__(self) -> None:
+        """Copy ``finding`` into an immutable mapping proxy.
+
+        Raises:
+            TypeError: If ``finding`` is not a mapping.
+        """
+        object.__setattr__(self, "finding", MappingProxyType(dict(self.finding)))
+
     @property
     def rule(self) -> str:
         """Return the WenLint rule id from the underlying finding."""
@@ -210,6 +221,14 @@ class InspectionReport:
     sections: tuple[Section, ...]
     findings: tuple[BoundFinding, ...]
 
+    def __post_init__(self) -> None:
+        """Copy ``source`` into an immutable mapping proxy.
+
+        Raises:
+            TypeError: If ``source`` is not a mapping.
+        """
+        object.__setattr__(self, "source", MappingProxyType(dict(self.source)))
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize the report to JSON-safe primitives.
 
@@ -254,6 +273,14 @@ class ApplyResult:
     revision_id: int | None
     message: str
     details: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Copy ``details`` into an immutable mapping proxy.
+
+        Raises:
+            TypeError: If ``details`` is not a mapping.
+        """
+        object.__setattr__(self, "details", MappingProxyType(dict(self.details)))
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize apply status without before/after text or block XML.
