@@ -89,6 +89,22 @@ def test_workspace_index_skips_nested_windows_junction(tmp_path, monkeypatch) ->
     assert paths == ["normal/included.md"]
 
 
+def test_workspace_read_rejects_nested_windows_junction(tmp_path, monkeypatch) -> None:
+    linked = tmp_path / "linked"
+    linked.mkdir()
+    (linked / "outside.md").write_text("外部正文", encoding="utf-8")
+    original = Path.is_junction
+    monkeypatch.setattr(
+        Path,
+        "is_junction",
+        lambda path: path == linked or original(path),
+    )
+    workspace = WorkspaceSession(tmp_path)
+
+    with pytest.raises(WorkspaceError, match="符号链接"):
+        workspace.read("linked/outside.md")
+
+
 def test_workspace_write_requires_matching_hash_and_confirmation(tmp_path) -> None:
     target = tmp_path / "draft.md"
     target.write_text("原文", encoding="utf-8")

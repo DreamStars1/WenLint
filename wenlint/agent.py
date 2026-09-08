@@ -73,6 +73,7 @@ class ReviewDecision:
     before: str
     after: str
     origin: str
+    related_finding_indexes: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -114,20 +115,20 @@ COMMON_PROMPT = """你是 WenLint 内置的中文文档审查 Agent。
 5. 保留 Markdown/RST 结构、代码、链接、专有名词和原意；只做必要修改。
 
 只能返回一个 JSON 对象，不得附带解释或 Markdown 代码围栏。格式：
-{"summary":"简要结论","decisions":[{"finding_index":1,"rule":"规则ID或SEMANTIC_类别","action":"KEEP|REWRITE|VERIFY|ASK","reason":"理由","before":"可唯一定位的原文片段","after":"REWRITE 后的文本；其他动作必须为空或等于原文"}]}
+{"summary":"简要结论","decisions":[{"finding_index":1,"related_finding_indexes":[],"rule":"规则ID或SEMANTIC_类别","action":"KEEP|REWRITE|VERIFY|ASK","reason":"理由","before":"可唯一定位的原文片段","after":"REWRITE 后的文本；其他动作必须为空或等于原文"}]}
 
 不要返回完整修改稿。WenLint 会在本地从通过校验的 REWRITE 决策生成修改稿。
 """
 
 STATIC_REVIEW_PROMPT = COMMON_PROMPT + """
 
-当前通道只裁决 static_findings：每一项必须恰好对应一条同规则的 decision，finding_index 按 1 开始编号。不得补充 finding_index=null 的问题。
+当前通道只裁决 static_findings：每一项必须恰好对应一条同规则的 decision，finding_index 按 1 开始编号。不得补充 finding_index=null 的问题，related_finding_indexes 必须为空数组。
 """
 
 SEMANTIC_REVIEW_PROMPT = COMMON_PROMPT + """
 
 当前通道必须脱离正则候选，对 document 做一次独立的全文语义审查。重点发现逻辑断裂、指代不明、遗漏前提、前后矛盾、语气或结论不当，以及静态规则没有覆盖的问题。
-只报告确实存在的问题；没有问题时 decisions 返回空数组。每条问题的 finding_index 必须为 null，rule 必须以 SEMANTIC_ 开头，action 只能是 REWRITE、VERIFY 或 ASK。不要重复 covered_static_findings 已覆盖的问题。
+只报告确实存在的问题；没有问题时 decisions 返回空数组。每条问题的 finding_index 必须为 null，rule 必须以 SEMANTIC_ 开头，action 只能是 REWRITE、VERIFY 或 ASK。related_finding_indexes 必须列出与该问题属于同一问题的静态候选编号；真正独立的新问题必须为空数组。不要把仅仅位于同一句话视为同一问题。
 """
 
 
@@ -187,7 +188,9 @@ class OpenAICompatibleAgent:
         summaries = [results_by_lane[lane][0] for lane in lanes]
         static_decisions = results_by_lane.get(ReviewLane.STATIC, ("", []))[1]
         semantic_decisions = results_by_lane[ReviewLane.SEMANTIC][1]
-        semantic_decisions = _remove_static_overlaps(text, semantic_decisions, findings)
+        semantic_decisions = [
+            item for item in semantic_decisions if not item.related_finding_indexes
+        ]
         decisions = _resolve_rewrite_conflicts(text, static_decisions, semantic_decisions)
         revised_text = _derive_revision(text, decisions)
         return AgentReview(
@@ -324,6 +327,7 @@ def _parse_lane(
         reason = item.get("reason")
         before = item.get("before", "")
         after = item.get("after", "")
+        raw_related = item.get("related_finding_indexes")
         if not isinstance(rule, str) or not rule.strip():
             raise AgentProtocolError(f"第 {index} 条 decision 缺少 rule")
         if finding_index is not None and (
@@ -338,6 +342,24 @@ def _parse_lane(
             raise AgentProtocolError(f"第 {index} 条 decision 缺少 reason")
         if not isinstance(before, str) or not isinstance(after, str):
             raise AgentProtocolError(f"第 {index} 条 decision 的 before/after 必须是文本")
+        if lane is ReviewLane.SEMANTIC:
+            if not isinstance(raw_related, list) or any(
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 1
+                or value > len(findings)
+                for value in raw_related
+            ):
+                raise AgentProtocolError(
+                    f"第 {index} 条语义 decision 的 related_finding_indexes 不合法"
+                )
+            if len(set(raw_related)) != len(raw_related):
+                raise AgentProtocolError(
+                    f"第 {index} 条语义 decision 的关联索引不能重复"
+                )
+            related = tuple(raw_related)
+        else:
+            related = ()
         decisions.append(
             ReviewDecision(
                 finding_index,
@@ -347,6 +369,7 @@ def _parse_lane(
                 before,
                 after,
                 lane.value,
+                related,
             )
         )
     if lane is ReviewLane.STATIC:
@@ -362,52 +385,6 @@ def _parse_lane(
             if item.action == "KEEP":
                 raise AgentProtocolError("全文语义通道不得返回 KEEP")
     return summary.strip(), decisions
-
-
-def _remove_static_overlaps(
-    source: str,
-    decisions: list[ReviewDecision],
-    findings: list[dict[str, object]],
-) -> list[ReviewDecision]:
-    """Keep only semantic issues whose source span is outside scanner matches."""
-
-    covered = _static_finding_spans(source, findings)
-    independent: list[ReviewDecision] = []
-    for item in decisions:
-        if not item.before:
-            independent.append(item)
-            continue
-        if source.count(item.before) != 1:
-            raise AgentProtocolError("全文语义问题的 before 无法唯一定位")
-        start = source.index(item.before)
-        end = start + len(item.before)
-        if any(start < other_end and end > other_start for other_start, other_end in covered):
-            continue
-        independent.append(item)
-    return independent
-
-
-def _static_finding_spans(
-    source: str, findings: list[dict[str, object]]
-) -> list[tuple[int, int]]:
-    line_starts = [0]
-    for index, character in enumerate(source):
-        if character == "\n":
-            line_starts.append(index + 1)
-    spans: list[tuple[int, int]] = []
-    for finding in findings:
-        line = finding.get("line")
-        column = finding.get("col")
-        match = finding.get("match")
-        if not isinstance(line, int) or not isinstance(column, int):
-            continue
-        if not isinstance(match, str) or not match or not 1 <= line <= len(line_starts):
-            continue
-        start = line_starts[line - 1] + column - 1
-        end = start + len(match)
-        if source[start:end] == match:
-            spans.append((start, end))
-    return spans
 
 
 def _validate_finding_coverage(
@@ -455,6 +432,7 @@ def _resolve_rewrite_conflicts(
                     before=item.before,
                     after="",
                     origin="semantic",
+                    related_finding_indexes=item.related_finding_indexes,
                 )
             )
             continue

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import tempfile
 from pathlib import Path
 
@@ -192,11 +193,11 @@ class WorkspaceSession:
             resolved.relative_to(self.root)
         except (OSError, ValueError):
             raise WorkspaceError("工作区文件不存在或路径越界") from None
-        if not resolved.is_file() or candidate.is_symlink():
+        if not resolved.is_file() or _is_link(candidate):
             raise WorkspaceError("工作区目标不是普通文件")
         parent = candidate.parent
         while parent != self.root:
-            if parent.is_symlink():
+            if _is_link(parent):
                 raise WorkspaceError("工作区不读取符号链接")
             parent = parent.parent
         return resolved
@@ -204,4 +205,11 @@ class WorkspaceSession:
 
 def _is_link(path: Path) -> bool:
     is_junction = getattr(path, "is_junction", lambda: False)
-    return path.is_symlink() or is_junction()
+    if path.is_symlink() or is_junction():
+        return True
+    try:
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    except OSError:
+        return False
+    reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attributes & reparse_point)

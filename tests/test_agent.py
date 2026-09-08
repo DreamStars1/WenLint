@@ -165,6 +165,7 @@ def test_review_reports_and_applies_new_semantic_issue_without_static_match() ->
         "decisions": [
             {
                 "finding_index": None,
+                "related_finding_indexes": [],
                 "rule": "SEMANTIC_CLARITY",
                 "action": "REWRITE",
                 "reason": "主语缺失。",
@@ -259,6 +260,7 @@ def test_review_drops_semantic_issue_that_duplicates_a_static_match() -> None:
                 "decisions": [
                     {
                         "finding_index": None,
+                        "related_finding_indexes": [1],
                         "rule": "SEMANTIC_CONTEXT",
                         "action": "ASK",
                         "reason": "重复报告静态候选。",
@@ -300,6 +302,7 @@ def test_review_drops_larger_semantic_span_overlapping_static_match() -> None:
                 "decisions": [
                     {
                         "finding_index": None,
+                        "related_finding_indexes": [1],
                         "rule": "SEMANTIC_CONTEXT",
                         "action": "ASK",
                         "reason": "重复报告静态候选。",
@@ -341,6 +344,7 @@ def test_review_keeps_distinct_semantic_span_in_same_sentence() -> None:
                 "decisions": [
                     {
                         "finding_index": None,
+                        "related_finding_indexes": [],
                         "rule": "SEMANTIC_MISSING_SUBJECT",
                         "action": "ASK",
                         "reason": "负责人没有定义。",
