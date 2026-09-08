@@ -138,13 +138,18 @@ def test_context_dependent_terms_are_semantic_candidates():
     hits = [h for h in scan_text(text) if h["rule_id"] == "M002"]
     assert hits
     assert all(h["severity"] == "candidate" for h in hits)
-    assert {"仍然", "不再"}.issubset({h["match"] for h in hits})
-    assert any(h["match"].startswith("先校验权限") and "再" in h["match"]
-               for h in hits)
+    assert {"仍然", "不再", "先", "再"}.issubset(
+        {h["match"] for h in hits})
 
 
-def test_context_dependent_sequence_does_not_cross_sentence_boundary():
+def test_context_dependent_terms_are_located_independently_across_sentences():
     text = "先完成校验。失败后再处理。\n"
+    hits = [h for h in scan_text(text) if h["rule_id"] == "M002"]
+    assert [h["match"] for h in hits] == ["先", "再"]
+
+
+def test_context_dependent_term_lexical_exceptions_do_not_report():
+    text = "原先口径另行核对；优先处理领先方案，先生负责再现和再生实验。\n"
     hits = [h for h in scan_text(text) if h["rule_id"] == "M002"]
     assert hits == []
 

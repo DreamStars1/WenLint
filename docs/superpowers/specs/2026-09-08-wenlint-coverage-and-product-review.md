@@ -178,7 +178,7 @@ WenLint 仍坚持“确定性工具负责发现，Skill / LLM 负责判断与修
 11. InspectionReport 始终输出约定的 coverage。
 12. `findings=[]` 时 coverage 仍说明 `semantic_review=not_run`。
 13. M001 能发现讨论、纠偏和版本演变过程词，输出 candidate 与审查提示。
-14. M002 能发现“先…再…”、“不再”和“仍然”，但不跨句拼接“先/再”。
+14. M002 能分别定位“先”“再”“不再”和“仍然”，并豁免“优先、领先、先生、再现、再生”等明显词汇义。
 
 ### 6.2 回归测试
 
