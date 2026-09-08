@@ -5,13 +5,16 @@ from __future__ import annotations
 import argparse
 import sys
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from . import __version__
 from .agent import AgentConfig, AgentError, MAX_TEXT_CHARS, OpenAICompatibleAgent
 from .profiles import PROFILES
 from .scanner import scan_text
+from .workspace import SUPPORTED_SUFFIXES, WorkspaceError, WorkspaceSession
 
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -34,6 +37,7 @@ class DesktopApi:
 
     def __init__(self) -> None:
         self._window: Any | None = None
+        self._workspace: WorkspaceSession | None = None
 
     def attach_window(self, window: Any) -> None:
         self._window = window
@@ -45,7 +49,77 @@ class DesktopApi:
             "profiles": sorted(PROFILES),
             "maxTextChars": MAX_TEXT_CHARS,
             "maxFileBytes": MAX_FILE_BYTES,
+            "workspaceSuffixes": sorted(SUPPORTED_SUFFIXES),
         }
+
+    def open_workspace(self) -> dict[str, object]:
+        if self._window is None:
+            return _failure("窗口尚未就绪")
+        try:
+            import webview
+
+            selected = self._window.create_file_dialog(
+                webview.FileDialog.FOLDER,
+                allow_multiple=False,
+            )
+            if not selected:
+                return {"ok": True, "cancelled": True}
+            self._workspace = WorkspaceSession(selected[0])
+            return {
+                "ok": True,
+                "cancelled": False,
+                "root": str(self._workspace.root),
+                "name": self._workspace.name,
+                "files": self._workspace.index(),
+            }
+        except (OSError, WorkspaceError) as exc:
+            message = str(exc) if isinstance(exc, WorkspaceError) else "无法打开工作区"
+            return _failure(message)
+
+    def workspace_index(self) -> dict[str, object]:
+        if self._workspace is None:
+            return _failure("尚未选择工作区")
+        return {
+            "ok": True,
+            "root": str(self._workspace.root),
+            "name": self._workspace.name,
+            "files": self._workspace.index(),
+        }
+
+    def workspace_read(self, payload: object) -> dict[str, object]:
+        if self._workspace is None:
+            return _failure("尚未选择工作区")
+        if not isinstance(payload, dict):
+            return _failure("请求格式无效")
+        try:
+            path = _required_string(payload, "path", "工作区文件路径")
+            return {"ok": True, **self._workspace.read(path)}
+        except (ValueError, WorkspaceError) as exc:
+            return _failure(str(exc))
+
+    def workspace_write(self, payload: object) -> dict[str, object]:
+        if self._workspace is None:
+            return _failure("尚未选择工作区")
+        if not isinstance(payload, dict):
+            return _failure("请求格式无效")
+        try:
+            path = _required_string(payload, "path", "工作区文件路径")
+            text = _required_string(payload, "text", "待写回文本")
+            expected_hash = _required_string(
+                payload, "expectedSha256", "文件内容校验值"
+            )
+            confirmed = payload.get("confirmed") is True
+            return {
+                "ok": True,
+                **self._workspace.write(
+                    path,
+                    text,
+                    expected_hash,
+                    confirmed=confirmed,
+                ),
+            }
+        except (ValueError, WorkspaceError) as exc:
+            return _failure(str(exc))
 
     def open_file(self) -> dict[str, object]:
         if self._window is None:
@@ -94,17 +168,34 @@ class DesktopApi:
         if not isinstance(payload, dict):
             return _failure("请求格式无效")
         try:
+            started = perf_counter()
             text, profile, filename = _document_request(payload)
             config = AgentConfig(
                 base_url=_required_string(payload, "baseUrl", "Base URL"),
                 api_key=_required_string(payload, "apiKey", "API Key"),
                 model=_required_string(payload, "model", "模型名称"),
             )
+            workspace_context = ""
+            workspace_path = payload.get("workspacePath")
+            if workspace_path:
+                if self._workspace is None:
+                    raise ValueError("当前文件关联的工作区已经断开")
+                if not isinstance(workspace_path, str):
+                    raise ValueError("工作区文件路径无效")
+                workspace_context = self._workspace.review_context(workspace_path)
             review = OpenAICompatibleAgent(config).review(
-                text, profile=profile, filename=filename
+                text,
+                profile=profile,
+                filename=filename,
+                workspace_context=workspace_context,
             )
             return {
                 "ok": True,
+                "reviewStatus": "completed",
+                "reviewedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "durationMs": round((perf_counter() - started) * 1000),
+                "modelCalls": review.model_calls,
+                "semanticIssueCount": review.semantic_issue_count,
                 "summary": review.summary,
                 "decisions": [asdict(item) for item in review.decisions],
                 "revisedText": review.revised_text,
@@ -181,6 +272,7 @@ def main(argv: list[str] | None = None) -> int:
         import webview
         getattr(webview.FileDialog, "OPEN")
         getattr(webview.FileDialog, "SAVE")
+        getattr(webview.FileDialog, "FOLDER")
     except (ImportError, AttributeError) as exc:
         print(
             "WenLint desktop runtime is unavailable; install with the desktop extra",
@@ -198,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
         width=1280,
         height=820,
         min_size=(960, 680),
-        background_color="#0b1220",
+        background_color="#f3f1ed",
         text_select=True,
     )
     api.attach_window(window)

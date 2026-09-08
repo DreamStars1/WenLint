@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import wenlint.desktop as desktop_module
+from wenlint.agent import AgentReview
 from wenlint.desktop import DesktopApi
+from wenlint.workspace import WorkspaceSession
 
 
 def test_static_scan_returns_json_compatible_findings() -> None:
@@ -54,3 +57,83 @@ def test_save_requires_an_attached_window() -> None:
         "ok": False,
         "error": "窗口尚未就绪",
     }
+
+
+def test_agent_review_reports_completed_state_even_without_changes(monkeypatch) -> None:
+    class FakeAgent:
+        def __init__(self, config) -> None:
+            pass
+
+        def review(self, text, *, profile, filename, workspace_context=""):
+            return AgentReview(
+                summary="语义复核完成，未发现需要修改的问题。",
+                decisions=(),
+                revised_text=text,
+                model_calls=1,
+                semantic_issue_count=0,
+            )
+
+    monkeypatch.setattr(desktop_module, "OpenAICompatibleAgent", FakeAgent)
+    result = DesktopApi().agent_review(
+        {
+            "text": "表述清楚。",
+            "profile": "general",
+            "filename": "a.md",
+            "baseUrl": "https://api.example.com/v1",
+            "apiKey": "secret",
+            "model": "demo",
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["reviewStatus"] == "completed"
+    assert result["revisedText"] == "表述清楚。"
+    assert result["decisions"] == []
+    assert result["semanticIssueCount"] == 0
+    assert result["modelCalls"] == 1
+    assert isinstance(result["durationMs"], int)
+    assert result["reviewedAt"].endswith("+00:00")
+
+
+def test_workspace_read_and_confirmed_write_are_scoped_to_selected_root(tmp_path) -> None:
+    target = tmp_path / "draft.md"
+    target.write_text("原文", encoding="utf-8")
+    api = DesktopApi()
+    api._workspace = WorkspaceSession(tmp_path)
+
+    indexed = api.workspace_index()
+    opened = api.workspace_read({"path": "draft.md"})
+    written = api.workspace_write(
+        {
+            "path": "draft.md",
+            "text": "修改稿",
+            "expectedSha256": opened["sha256"],
+            "confirmed": True,
+        }
+    )
+
+    assert indexed["files"][0]["path"] == "draft.md"
+    assert opened["content"] == "原文"
+    assert written["ok"] is True
+    assert target.read_text(encoding="utf-8") == "修改稿"
+
+
+def test_workspace_write_rejects_unconfirmed_change(tmp_path) -> None:
+    target = tmp_path / "draft.md"
+    target.write_text("原文", encoding="utf-8")
+    api = DesktopApi()
+    api._workspace = WorkspaceSession(tmp_path)
+    opened = api.workspace_read({"path": "draft.md"})
+
+    result = api.workspace_write(
+        {
+            "path": "draft.md",
+            "text": "修改稿",
+            "expectedSha256": opened["sha256"],
+            "confirmed": False,
+        }
+    )
+
+    assert result["ok"] is False
+    assert "确认" in result["error"]
+    assert target.read_text(encoding="utf-8") == "原文"

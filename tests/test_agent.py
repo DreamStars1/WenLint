@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
@@ -30,6 +31,13 @@ def _response(content: str) -> dict[str, object]:
     return {"choices": [{"message": {"content": content}}]}
 
 
+def _request_lane(request: object) -> str:
+    payload = json.loads(request.data.decode("utf-8"))
+    user_content = payload["messages"][1]["content"]
+    task = json.loads(user_content.split("\n", 1)[1])
+    return task["review_lane"]
+
+
 def test_build_chat_completions_url_accepts_base_or_full_endpoint() -> None:
     assert (
         build_chat_completions_url("https://api.example.com/v1/")
@@ -48,11 +56,13 @@ def test_build_chat_completions_url_rejects_unsafe_values(value: str) -> None:
 
 
 def test_review_sends_key_only_in_authorization_header_and_parses_fenced_json() -> None:
-    captured: dict[str, object] = {}
+    captured: list[tuple[object, float]] = []
 
     def opener(request: object, *, timeout: float) -> FakeResponse:
-        captured["request"] = request
-        captured["timeout"] = timeout
+        captured.append((request, timeout))
+        if _request_lane(request) == "semantic":
+            body = {"summary": "未发现额外问题。", "decisions": []}
+            return FakeResponse(_response(json.dumps(body, ensure_ascii=False)))
         body = {
             "summary": "发现一处依赖旧上下文的表达。",
             "decisions": [
@@ -65,7 +75,6 @@ def test_review_sends_key_only_in_authorization_header_and_parses_fenced_json() 
                     "after": "该结论需要复核。",
                 }
             ],
-            "revised_text": "该结论需要复核。",
         }
         return FakeResponse(_response(f"```json\n{json.dumps(body, ensure_ascii=False)}\n```"))
 
@@ -79,16 +88,19 @@ def test_review_sends_key_only_in_authorization_header_and_parses_fenced_json() 
         "仍然需要复核。", profile="general", filename="draft.md"
     )
 
-    request = captured["request"]
-    assert request.full_url == "https://api.example.com/v1/chat/completions"
-    assert request.get_header("Authorization") == "Bearer top-secret-key"
-    request_body = request.data.decode("utf-8")
-    assert "top-secret-key" not in request_body
-    assert "仍然需要复核。" in request_body
-    assert captured["timeout"] == 12
+    assert len(captured) == 2
+    for request, timeout in captured:
+        assert request.full_url == "https://api.example.com/v1/chat/completions"
+        assert request.get_header("Authorization") == "Bearer top-secret-key"
+        request_body = request.data.decode("utf-8")
+        assert "top-secret-key" not in request_body
+        assert "仍然需要复核。" in request_body
+        assert timeout == 12
     assert result.revised_text == "该结论需要复核。"
     assert result.decisions[0].action == "REWRITE"
     assert result.decisions[0].finding_index == 1
+    assert result.model_calls == 2
+    assert result.semantic_issue_count == 0
 
 
 def test_review_rejects_an_unknown_action() -> None:
@@ -130,7 +142,7 @@ def test_review_requires_a_decision_for_every_static_finding() -> None:
         agent.review("仍然保留。")
 
 
-def test_review_rejects_changes_not_declared_by_rewrite_decisions() -> None:
+def test_review_ignores_provider_revision_and_derives_text_from_decisions() -> None:
     body = {
         "summary": "无命中",
         "decisions": [],
@@ -143,8 +155,86 @@ def test_review_rejects_changes_not_declared_by_rewrite_decisions() -> None:
     agent = OpenAICompatibleAgent(
         AgentConfig("https://api.example.com/v1", "key", "model"), opener=opener
     )
-    with pytest.raises(AgentProtocolError, match="未由 REWRITE"):
-        agent.review("原文保持不变。")
+    result = agent.review("原文保持不变。")
+    assert result.revised_text == "原文保持不变。"
+
+
+def test_review_reports_and_applies_new_semantic_issue_without_static_match() -> None:
+    body = {
+        "summary": "发现一处模型独立识别的问题。",
+        "decisions": [
+            {
+                "finding_index": None,
+                "rule": "SEMANTIC_CLARITY",
+                "action": "REWRITE",
+                "reason": "主语缺失。",
+                "before": "完成后提交。",
+                "after": "负责人完成检查后提交报告。",
+            }
+        ],
+    }
+
+    def opener(request: object, *, timeout: float) -> FakeResponse:
+        return FakeResponse(_response(json.dumps(body, ensure_ascii=False)))
+
+    result = OpenAICompatibleAgent(
+        AgentConfig("https://api.example.com/v1", "key", "model"), opener=opener
+    ).review("完成后提交。")
+
+    assert result.revised_text == "负责人完成检查后提交报告。"
+    assert result.semantic_issue_count == 1
+    assert result.decisions[0].origin == "semantic"
+
+
+def test_review_uses_parallel_static_and_semantic_lanes() -> None:
+    barrier = threading.Barrier(2, timeout=2)
+
+    def opener(request: object, *, timeout: float) -> FakeResponse:
+        barrier.wait()
+        if _request_lane(request) == "static":
+            body = {
+                "summary": "静态候选已裁决。",
+                "decisions": [
+                    {
+                        "finding_index": 1,
+                        "rule": "M002",
+                        "action": "KEEP",
+                        "reason": "上下文清楚。",
+                        "before": "仍然需要复核。",
+                        "after": "",
+                    }
+                ],
+            }
+        else:
+            body = {"summary": "未发现额外问题。", "decisions": []}
+        return FakeResponse(_response(json.dumps(body, ensure_ascii=False)))
+
+    result = OpenAICompatibleAgent(
+        AgentConfig("https://api.example.com/v1", "key", "model"), opener=opener
+    ).review("仍然需要复核。")
+
+    assert result.model_calls == 2
+    assert result.revised_text == "仍然需要复核。"
+
+
+def test_review_without_static_findings_still_runs_semantic_lane() -> None:
+    calls = 0
+
+    def opener(request: object, *, timeout: float) -> FakeResponse:
+        nonlocal calls
+        calls += 1
+        assert _request_lane(request) == "semantic"
+        body = {"summary": "全文语义复核完成，未发现问题。", "decisions": []}
+        return FakeResponse(_response(json.dumps(body, ensure_ascii=False)))
+
+    result = OpenAICompatibleAgent(
+        AgentConfig("https://api.example.com/v1", "key", "model"), opener=opener
+    ).review("这是一段表述清楚的正文。")
+
+    assert calls == 1
+    assert result.decisions == ()
+    assert result.revised_text == "这是一段表述清楚的正文。"
+    assert result.semantic_issue_count == 0
 
 
 def test_review_rejects_malformed_provider_response_without_echoing_source() -> None:

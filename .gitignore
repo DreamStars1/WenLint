@@ -13,6 +13,7 @@ __pycache__/
 build/
 dist-test/
 dist/
+dist-*/
 .venv-dist-test/
 .venv-desktop/
 .pytest-*/

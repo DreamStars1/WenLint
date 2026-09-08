@@ -10,6 +10,12 @@ const decisions = ref([])
 const revisedText = ref('')
 const reviewSource = ref('')
 const reviewProfile = ref('')
+const reviewState = ref('idle')
+const reviewError = ref('')
+const reviewedAt = ref('')
+const reviewDurationMs = ref(0)
+const modelCalls = ref(0)
+const semanticIssueCount = ref(0)
 const activeTab = ref('findings')
 const revisionMode = ref('changes')
 const selectedFindingIndex = ref(0)
@@ -19,11 +25,23 @@ const apiReady = ref(false)
 const showKey = ref(false)
 const settingsOpen = ref(false)
 const confirmOpen = ref(false)
+const workspaceWriteConfirm = ref(false)
 const dragActive = ref(false)
 const editingStarted = ref(false)
 const sourceEditor = ref(null)
-const version = ref('0.3.0')
+const version = ref('0.4.0')
 const limits = reactive({ maxFileBytes: 0, maxTextChars: 0 })
+const workspaceQuery = ref('')
+const workspace = reactive({
+  connected: false,
+  visible: false,
+  root: '',
+  name: '',
+  files: [],
+  selectedPath: '',
+  selectedSha256: '',
+  loadedText: '',
+})
 const toast = reactive({ visible: false, kind: 'info', message: '' })
 const config = reactive({
   baseUrl: 'https://api.openai.com/v1',
@@ -48,10 +66,27 @@ const rewriteDecisions = computed(() => decisions.value.filter((item) => item.ac
 const pendingCount = computed(
   () => decisions.value.filter((item) => ['VERIFY', 'ASK'].includes(item.action)).length,
 )
-const revisionStale = computed(
-  () => hasRevision.value
+const reviewIsStale = computed(
+  () => reviewState.value === 'complete'
     && (sourceText.value !== reviewSource.value || config.profile !== reviewProfile.value),
 )
+const revisionStale = computed(() => hasRevision.value && reviewIsStale.value)
+const workspaceDirty = computed(
+  () => workspace.selectedPath && sourceText.value !== workspace.loadedText,
+)
+const filteredWorkspaceFiles = computed(() => {
+  const query = workspaceQuery.value.trim().toLowerCase()
+  if (!query) return workspace.files
+  return workspace.files.filter((item) => item.path.toLowerCase().includes(query))
+})
+const reviewMeta = computed(() => {
+  if (!reviewedAt.value) return ''
+  const time = new Date(reviewedAt.value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  const duration = reviewDurationMs.value >= 1000
+    ? `${(reviewDurationMs.value / 1000).toFixed(1)} 秒`
+    : `${reviewDurationMs.value} 毫秒`
+  return `${time} 完成 · ${duration} · ${modelCalls.value} 路模型调用`
+})
 const modelState = computed(() => (
   config.baseUrl.trim() && config.apiKey.trim() && config.model.trim() ? '模型已配置' : '模型未配置'
 ))
@@ -97,6 +132,12 @@ function clearResults() {
   revisedText.value = ''
   reviewSource.value = ''
   reviewProfile.value = ''
+  reviewState.value = 'idle'
+  reviewError.value = ''
+  reviewedAt.value = ''
+  reviewDurationMs.value = 0
+  modelCalls.value = 0
+  semanticIssueCount.value = 0
   selectedFindingIndex.value = 0
   selectedDecisionIndex.value = 0
 }
@@ -111,8 +152,75 @@ async function openFile() {
     editingStarted.value = true
     filename.value = result.filename
     filePath.value = result.path
+    workspace.selectedPath = ''
+    workspace.selectedSha256 = ''
+    workspace.loadedText = ''
     clearResults()
     notify(`已打开 ${result.filename}`, 'success')
+  } catch (error) {
+    notify(error.message, 'error')
+  }
+}
+
+async function toggleWorkspace() {
+  if (workspace.connected) {
+    workspace.visible = !workspace.visible
+    return
+  }
+  try {
+    const result = await callApi('open_workspace')
+    if (!result.ok) throw new Error(result.error)
+    if (result.cancelled) return
+    workspace.connected = true
+    workspace.visible = true
+    workspace.root = result.root
+    workspace.name = result.name
+    workspace.files = result.files
+    workspaceQuery.value = ''
+    notify(`已关联工作区 ${result.name}`, 'success')
+  } catch (error) {
+    notify(error.message, 'error')
+  }
+}
+
+async function changeWorkspace() {
+  workspace.connected = false
+  workspace.visible = false
+  await toggleWorkspace()
+}
+
+async function openWorkspaceFile(item) {
+  if (busy.value) return
+  try {
+    const result = await callApi('workspace_read', { path: item.path })
+    if (!result.ok) throw new Error(result.error)
+    sourceText.value = result.content
+    editingStarted.value = true
+    filename.value = result.filename
+    filePath.value = `${workspace.root}\\${result.path.replaceAll('/', '\\')}`
+    workspace.selectedPath = result.path
+    workspace.selectedSha256 = result.sha256
+    workspace.loadedText = result.content
+    clearResults()
+    notify(`已打开 ${result.path}`, 'success')
+  } catch (error) {
+    notify(error.message, 'error')
+  }
+}
+
+async function writeWorkspaceFile() {
+  workspaceWriteConfirm.value = false
+  try {
+    const result = await callApi('workspace_write', {
+      path: workspace.selectedPath,
+      text: sourceText.value,
+      expectedSha256: workspace.selectedSha256,
+      confirmed: true,
+    })
+    if (!result.ok) throw new Error(result.error)
+    workspace.selectedSha256 = result.sha256
+    workspace.loadedText = sourceText.value
+    notify(`已写回 ${result.path}`, 'success')
   } catch (error) {
     notify(error.message, 'error')
   }
@@ -137,6 +245,9 @@ async function acceptDroppedFile(event) {
     editingStarted.value = true
     filename.value = file.name
     filePath.value = ''
+    workspace.selectedPath = ''
+    workspace.selectedSha256 = ''
+    workspace.loadedText = ''
     clearResults()
     notify(`已打开 ${file.name}`, 'success')
   } catch {
@@ -183,6 +294,8 @@ function requestSemanticReview() {
 async function runSemanticReview() {
   confirmOpen.value = false
   busy.value = 'review'
+  reviewState.value = 'running'
+  reviewError.value = ''
   const requestedText = sourceText.value
   const requestedProfile = config.profile
   try {
@@ -193,6 +306,7 @@ async function runSemanticReview() {
       baseUrl: config.baseUrl,
       apiKey: config.apiKey,
       model: config.model,
+      workspacePath: workspace.selectedPath || '',
     })
     if (!result.ok) throw new Error(result.error)
     summary.value = result.summary
@@ -200,10 +314,20 @@ async function runSemanticReview() {
     revisedText.value = result.revisedText
     reviewSource.value = requestedText
     reviewProfile.value = requestedProfile
+    reviewState.value = 'complete'
+    reviewedAt.value = result.reviewedAt || new Date().toISOString()
+    reviewDurationMs.value = result.durationMs || 0
+    modelCalls.value = result.modelCalls || 1
+    semanticIssueCount.value = result.semanticIssueCount || 0
     selectedDecisionIndex.value = 0
     activeTab.value = 'decisions'
-    notify(`语义复核完成：${result.decisions.length} 条结论`, 'success')
+    const message = result.decisions.length
+      ? `语义复核完成：${result.decisions.length} 条结论，其中 ${semanticIssueCount.value} 条为模型新发现`
+      : '语义复核完成：未发现需要处理的问题'
+    notify(message, 'success')
   } catch (error) {
+    reviewState.value = 'error'
+    reviewError.value = error.message
     notify(error.message, 'error')
   } finally {
     busy.value = ''
@@ -246,6 +370,7 @@ function actionName(action) {
       <div class="brand"><span class="brand-mark">文</span><strong>文尺</strong><span class="version">{{ version }}</span></div>
       <div class="document-title" :title="filePath || filename"><strong>{{ filename }}</strong><span>{{ filePath || '本地草稿' }}</span></div>
       <nav class="toolbar" aria-label="文档操作">
+        <button class="tool-button" :class="{ active: workspace.visible }" :disabled="!apiReady || !!busy" @click="toggleWorkspace">{{ workspace.connected ? workspace.name : '工作区' }}</button>
         <button class="tool-button" :disabled="!apiReady || !!busy" @click="openFile">打开文件</button>
         <span class="toolbar-divider"></span>
         <label class="profile-select"><span>场景</span><select v-model="config.profile"><option v-for="(label, key) in profileNames" :key="key" :value="key">{{ label }}</option></select></label>
@@ -264,9 +389,21 @@ function actionName(action) {
       </div>
     </section>
 
-    <section class="workbench">
+    <section :class="['workbench', { 'with-workspace': workspace.visible }]">
+      <aside v-if="workspace.visible" class="workspace-panel">
+        <header><div><span>工作区</span><strong :title="workspace.root">{{ workspace.name }}</strong></div><button title="收起工作区" @click="workspace.visible = false">‹</button></header>
+        <div class="workspace-search"><input v-model="workspaceQuery" placeholder="筛选文件" spellcheck="false" /></div>
+        <div class="workspace-files">
+          <button v-for="item in filteredWorkspaceFiles" :key="item.path" :class="{ selected: workspace.selectedPath === item.path }" :title="item.path" @click="openWorkspaceFile(item)">
+            <span class="file-mark">{{ item.name.split('.').pop()?.toUpperCase() }}</span><span><strong>{{ item.name }}</strong><small>{{ item.path }}</small></span>
+          </button>
+          <div v-if="!filteredWorkspaceFiles.length" class="workspace-empty">没有可审查的文本文件</div>
+        </div>
+        <footer><span>{{ workspace.files.length }} 个文本文件</span><button @click="changeWorkspace">更换目录</button></footer>
+      </aside>
+
       <article class="editor-pane" @dragover.prevent="dragActive = true" @dragleave.prevent="dragActive = false" @drop.prevent="acceptDroppedFile">
-        <div class="pane-title"><strong>正文</strong><span>编辑</span></div>
+        <div class="pane-title"><div><strong>正文</strong><span>编辑</span></div><button v-if="workspaceDirty" class="workspace-save" @click="workspaceWriteConfirm = true">写回工作区</button></div>
         <div class="editor-wrap" :class="{ dragging: dragActive }">
           <div v-if="dragActive" class="drop-overlay">松开鼠标以打开文档</div>
           <div v-else-if="!sourceText && !editingStarted" class="editor-welcome">
@@ -283,11 +420,11 @@ function actionName(action) {
       <aside class="review-pane">
         <nav class="review-tabs">
           <button :class="{ active: activeTab === 'findings' }" @click="activeTab = 'findings'">问题 <span>{{ findings.length }}</span></button>
-          <button :class="{ active: activeTab === 'decisions' }" @click="activeTab = 'decisions'">复核结论 <span>{{ decisions.length }}</span></button>
+          <button :class="{ active: activeTab === 'decisions' }" @click="activeTab = 'decisions'">复核结论 <span :class="{ complete: reviewState === 'complete' }">{{ reviewState === 'complete' ? '已完成' : decisions.length }}</span></button>
           <button :class="{ active: activeTab === 'revision' }" @click="activeTab = 'revision'">修改稿</button>
         </nav>
 
-        <div v-if="revisionStale" class="stale-notice">正文或场景已经变化，当前修改稿不能应用；请重新复核。</div>
+        <div v-if="reviewIsStale" class="stale-notice">正文或场景已经变化，当前语义复核结果已过期；请重新复核。</div>
 
         <section v-if="activeTab === 'findings'" class="tab-body split-view">
           <div v-if="!findings.length" class="review-welcome"><span class="review-mark">✓</span><h2>检查你的文档</h2><p>先运行本地检查，快速发现含糊表达、过程痕迹、冗余和结构问题。</p><ol><li><b>本地检查</b><span>规则引擎在本机完成</span></li><li><b>语义复核</b><span>逐项判断并生成修改建议</span></li><li><b>确认修改</b><span>预览差异后再应用或保存</span></li></ol></div>
@@ -309,12 +446,17 @@ function actionName(action) {
         </section>
 
         <section v-else-if="activeTab === 'decisions'" class="tab-body split-view">
-          <div v-if="!decisions.length" class="empty-state"><strong>没有复核结论</strong><p>配置模型后运行“语义复核”，系统会逐项判断静态候选。</p></div>
+          <div v-if="reviewState === 'idle'" class="empty-state review-idle"><span class="idle-mark">◇</span><strong>尚未进行语义复核</strong><p>点击顶部“语义复核”，模型会并发裁决规则候选并独立检查全文。</p></div>
+          <div v-else-if="reviewState === 'running'" class="empty-state review-running"><span class="large-spinner"></span><strong>正在进行两路语义复核</strong><p>候选裁决与全文独立发现并行运行。</p></div>
+          <div v-else-if="reviewState === 'error'" class="empty-state review-error"><span class="idle-mark">!</span><strong>本次语义复核未完成</strong><p>{{ reviewError }}</p></div>
+          <div v-else-if="!decisions.length" class="review-complete">
+            <span class="complete-mark">✓</span><h2>语义复核已完成</h2><strong>未发现需要修改或人工确认的问题</strong><p>{{ summary }}</p><small>{{ reviewMeta }}</small>
+          </div>
           <template v-else>
-            <div class="review-summary"><p>{{ summary }}</p><span>{{ rewriteDecisions.length }} 处改写 · {{ pendingCount }} 处待人工处理</span></div>
+            <div class="review-summary"><div><span class="complete-dot">✓</span><p>{{ summary }}</p></div><span>{{ rewriteDecisions.length }} 处改写 · {{ pendingCount }} 处待人工处理 · {{ semanticIssueCount }} 条模型新发现</span><small>{{ reviewMeta }}</small></div>
             <div class="issue-list decision-list">
               <button v-for="(item, index) in decisions" :key="index" :class="['issue-row', { selected: selectedDecisionIndex === index }]" @click="selectedDecisionIndex = index">
-                <span :class="['action-label', item.action.toLowerCase()]">{{ actionName(item.action) }}</span>
+                <span class="decision-tags"><span :class="['action-label', item.action.toLowerCase()]">{{ actionName(item.action) }}</span><em v-if="item.origin === 'semantic'">模型新发现</em></span>
                 <span class="issue-main"><strong>{{ item.rule }}</strong><small>{{ item.reason }}</small></span>
               </button>
             </div>
@@ -327,7 +469,9 @@ function actionName(action) {
         </section>
 
         <section v-else class="tab-body revision-tab">
-          <div v-if="!hasRevision" class="empty-state"><strong>没有修改稿</strong><p>语义复核完成后，可先查看变更，再决定是否应用或另存。</p></div>
+          <div v-if="reviewState === 'idle'" class="empty-state"><strong>尚未生成修改稿</strong><p>完成语义复核后，可先查看变更，再决定是否应用或另存。</p></div>
+          <div v-else-if="reviewState === 'complete' && !rewriteDecisions.length" class="review-complete"><span class="complete-mark">✓</span><h2>复核完成，正文无变化</h2><p>模型没有提出可直接应用的改写。VERIFY 或 ASK 项仍需在“复核结论”中人工处理。</p><small>{{ reviewMeta }}</small></div>
+          <div v-else-if="!hasRevision" class="empty-state"><strong>没有可用修改稿</strong><p>本次复核未完成，请检查模型连接后重试。</p></div>
           <template v-else>
             <div class="revision-toolbar"><div><button :class="{ active: revisionMode === 'changes' }" @click="revisionMode = 'changes'">仅看变更</button><button :class="{ active: revisionMode === 'full' }" @click="revisionMode = 'full'">查看全文</button></div><span>{{ rewriteDecisions.length }} 处变更</span></div>
             <div v-if="revisionMode === 'changes'" class="changes-list">
@@ -348,10 +492,20 @@ function actionName(action) {
     <div v-if="confirmOpen" class="modal-backdrop" @click.self="confirmOpen = false">
       <section class="modal-card">
         <h2>发送文本进行语义复核</h2>
-        <p>当前正文和静态检查结果将发送到以下模型服务：</p>
+        <p>当前正文、静态检查结果{{ workspace.selectedPath ? '和工作区文件索引' : '' }}将发送到以下模型服务：</p>
         <code>{{ config.baseUrl }}</code>
-        <ul><li>API Key 不会写入配置文件或日志</li><li>修改稿不会自动覆盖原文件</li><li>请确认该服务可以接收当前文档内容</li></ul>
+        <ul><li>候选裁决与全文独立发现会并发执行</li><li>API Key 不会写入配置文件或日志</li><li>修改稿不会自动覆盖原文件</li><li>请确认该服务可以接收当前文档内容</li></ul>
         <div class="modal-actions"><button class="tool-button" @click="confirmOpen = false">取消</button><button class="tool-button primary" @click="runSemanticReview">确认发送</button></div>
+      </section>
+    </div>
+
+    <div v-if="workspaceWriteConfirm" class="modal-backdrop" @click.self="workspaceWriteConfirm = false">
+      <section class="modal-card">
+        <h2>写回工作区文件</h2>
+        <p>这会替换以下文件的当前内容：</p>
+        <code>{{ workspace.selectedPath }}</code>
+        <ul><li>写入前会校验文件是否被其他程序修改</li><li>只有本次明确确认后才会写入</li><li>建议工作区同时使用 Git 或其他版本管理</li></ul>
+        <div class="modal-actions"><button class="tool-button" @click="workspaceWriteConfirm = false">取消</button><button class="tool-button primary" @click="writeWorkspaceFile">确认写回</button></div>
       </section>
     </div>
   </main>

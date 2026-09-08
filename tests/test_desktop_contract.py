@@ -35,3 +35,7 @@ def test_vue_desktop_exists_and_does_not_persist_credentials() -> None:
     assert "window.pywebview" in vue_source and ".api" in vue_source
     forbidden = ("localStorage", "sessionStorage", "keyring", "winreg")
     assert all(token not in source + vue_source for token in forbidden)
+    assert "尚未进行语义复核" in vue_source
+    assert "语义复核已完成" in vue_source
+    assert "模型新发现" in vue_source
+    assert "open_workspace" in source and "workspace_write" in source
