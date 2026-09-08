@@ -6,7 +6,7 @@ on:
       release_tag:
         description: Existing release to launch without model calls
         required: true
-        default: v0.6.1
+        default: v0.6.2
 
 permissions:
   contents: read
