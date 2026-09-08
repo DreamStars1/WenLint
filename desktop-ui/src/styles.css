@@ -308,6 +308,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .agent-event p { margin: 7px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); font-size: 12px; line-height: 1.7; }
 .agent-event.tool_result, .agent-event.lane_complete { border-left-color: #80aa83; }
 .agent-event.error { border-left-color: var(--red); }
+.agent-event .stream-progress { color: var(--muted); font-size: 11px; }
+.stream-progress small { margin-left: 8px; color: var(--faint); font-size: 10px; }
 .tool-details { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px; }
 .tool-details summary { color: var(--blue); cursor: pointer; font-size: 11px; }
 .tool-details pre { max-height: 250px; overflow: auto; margin: 8px 0 0; padding: 9px; border-radius: 4px; background: #eeece6; white-space: pre-wrap; overflow-wrap: anywhere; font-family: Consolas, "Microsoft YaHei UI", monospace; font-size: 11px; line-height: 1.6; }

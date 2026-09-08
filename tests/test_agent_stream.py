@@ -78,6 +78,54 @@ def test_stream_request_accepts_provider_json_fallback():
     assert client(opener).review("文档正文。", on_event=lambda _: None).model_calls == 1
 
 
+def test_invalid_final_json_gets_one_visible_format_retry_without_tools():
+    requests, events = [], []
+
+    def opener(request, *, timeout):
+        payload = json.loads(request.data)
+        requests.append(payload)
+        if len(requests) == 1:
+            return Response(event({"content": '{"summary":"broken"'}, "stop"))
+        assert "tools" not in payload and "tool_choice" not in payload
+        assert payload["messages"][-2] == {"role": "assistant", "content": '{"summary":"broken"'}
+        return Response(final_stream())
+
+    result = client(opener).review("文档正文。", on_event=events.append)
+    assert result.model_calls == 2
+    assert result.revised_text == "文档正文。"
+    assert len([e for e in events if e["kind"] == "retry"]) == 1
+
+
+def test_invalid_final_json_retry_is_bounded_and_error_names_lane():
+    requests = []
+
+    def opener(request, *, timeout):
+        requests.append(request)
+        return Response(event({"content": "malformed private document"}, "stop"))
+
+    with pytest.raises(AgentProtocolError, match="全文语义审查返回格式仍不合格") as error:
+        client(opener).review("文档正文。", on_event=lambda _: None)
+    assert len(requests) == 2
+    assert "private document" not in str(error.value)
+
+
+def test_cancellation_during_format_retry_prevents_second_request():
+    requests = []
+    cancelled = threading.Event()
+
+    def opener(request, *, timeout):
+        requests.append(request)
+        return Response(event({"content": "invalid"}, "stop"))
+
+    def receive(event):
+        if event["kind"] == "retry":
+            cancelled.set()
+
+    with pytest.raises(AgentCancelledError):
+        client(opener).review("文档正文。", on_event=receive, cancel_event=cancelled)
+    assert len(requests) == 1
+
+
 @pytest.mark.parametrize("data", [
     b"data: not-json\n\n", event({"content": "partial"}),
     event({"content": "partial"}, "length"),
@@ -122,7 +170,7 @@ def test_tool_rounds_and_total_calls_are_bounded(tmp_path):
         requests.append(payload)
         if "tools" not in payload:
             return Response(final_stream())
-        calls = [{"index": index, "id": f"round{len(requests)}_{index}", "function": {"name": "list_workspace_files", "arguments": "{}"}} for index in range(3)]
+        calls = [{"index": index, "id": f"round{len(requests)}_{index}", "function": {"name": "search_workspace_text", "arguments": '{"query":"正文"}'}} for index in range(3)]
         return Response(event({"tool_calls": calls}, "tool_calls") + b"data: [DONE]\n\n")
 
     result = client(opener).review("文档正文。", workspace_access=access, on_event=events.append)
@@ -130,6 +178,28 @@ def test_tool_rounds_and_total_calls_are_bounded(tmp_path):
     assert len([item for item in events if item["kind"] == "tool_start"]) == 8
     assert "tools" not in requests[-1]
     assert "reasoning_content" not in json.dumps(requests)
+
+
+def test_listing_paths_must_be_followed_by_content_lookup(tmp_path):
+    requests = []
+
+    def opener(request, *, timeout):
+        payload = json.loads(request.data)
+        requests.append(payload)
+        if len(requests) == 1:
+            name, arguments = "list_workspace_files", "{}"
+        elif len(requests) == 2:
+            assert payload["tool_choice"] == "required"
+            assert {t["function"]["name"] for t in payload["tools"]} == {"read_workspace_file", "search_workspace_text"}
+            name, arguments = "read_workspace_file", '{"path":"facts.md"}'
+        else:
+            assert payload["tool_choice"] == "auto"
+            assert "五月一日" in payload["messages"][-1]["content"]
+            return Response(final_stream())
+        return Response(event({"tool_calls": [{"index": 0, "id": str(len(requests)), "function": {"name": name, "arguments": arguments}}]}, "tool_calls"))
+
+    result = client(opener).review("文档正文。", workspace_access=access_for(tmp_path), on_event=lambda _: None)
+    assert result.model_calls == 3
 
 
 def test_cancel_before_tool_start_prevents_tools_and_followup_model(tmp_path):

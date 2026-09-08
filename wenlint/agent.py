@@ -129,6 +129,7 @@ COMMON_PROMPT = """你是 WenLint 内置的中文文档审查 Agent。
 {"summary":"简要结论","decisions":[{"finding_index":1,"related_finding_indexes":[],"rule":"规则ID或SEMANTIC_类别","action":"KEEP|REWRITE|VERIFY|ASK","reason":"理由","before":"可唯一定位的原文片段","after":"REWRITE 后的文本；其他动作必须为空或等于原文"}]}
 
 不要返回完整修改稿。WenLint 会在本地从通过校验的 REWRITE 决策生成修改稿。
+输出保持简洁：summary 不超过100字，reason 只解释直接依据（通常40字，引用资料时可到120字）。before 使用足以唯一定位的最短原文，不要为每条问题重复整段。严格转义 JSON 字符串中的双引号、换行和反斜杠。
 """
 
 STATIC_REVIEW_PROMPT = COMMON_PROMPT + """
@@ -140,6 +141,7 @@ SEMANTIC_REVIEW_PROMPT = COMMON_PROMPT + """
 
 当前通道必须脱离正则候选，对 document 做一次独立的全文语义审查。重点发现逻辑断裂、指代不明、遗漏前提、前后矛盾、语气或结论不当，以及静态规则没有覆盖的问题。
 只报告确实存在的问题；没有问题时 decisions 返回空数组。每条问题的 finding_index 必须为 null，rule 必须以 SEMANTIC_ 开头，action 只能是 REWRITE、VERIFY 或 ASK。related_finding_indexes 必须列出与该问题属于同一问题的静态候选编号；真正独立的新问题必须为空数组。不要把仅仅位于同一句话视为同一问题。
+优先报告最多8个影响理解或事实准确性的独立问题，合并同一根因，避免重复静态通道的措辞建议。
 """
 
 
@@ -212,12 +214,15 @@ class OpenAICompatibleAgent:
                     "用户启用工作区查证，表示要求用本地资料核实当前稿。正文含具体版本、日期、"
                     "数值、支持平台或产品能力等可核实事实时，必须先执行相关检索或读取，再得出结论；"
                     "不能仅凭行文通顺或模型常识宣布没有问题。没有可核实事实时不必调用工具。"
+                    "列出文件只得到目录，不是事实证据。发现相关参考文件后必须读取其内容，或搜索相关正文片段。"
+                    "可以在一次响应中并行请求多个相关文件，减少等待。"
                     "引用资料时在 reason 中注明文件相对路径和行号。不要为凑步骤调用工具。"
                     "最多 3 轮、8 次工具调用，之后必须返回最终 JSON。\n"
                     + json.dumps(access.context, ensure_ascii=False)
                 )
             calls = 0
             tool_count = 0
+            content_lookup_attempted = False
             for round_index in range(MAX_TOOL_ROUNDS + 1):
                 _check_active(stopped, deadline)
                 if access is not None and (round_index == MAX_TOOL_ROUNDS or tool_count >= MAX_TOOL_CALLS):
@@ -236,9 +241,34 @@ class OpenAICompatibleAgent:
                 message = _extract_message(response)
                 tool_calls = message.get("tool_calls")
                 if not tool_calls:
-                    if access is not None and tool_count == 0:
+                    if access is not None and not content_lookup_attempted:
                         raise AgentProtocolError("模型未执行已启用的工作区查证，请重试或关闭查证后审查")
-                    summary, decisions = _parse_lane(_extract_content(response), lane=lane, findings=findings)
+                    content = _extract_content(response)
+                    try:
+                        summary, decisions = _parse_lane(content, lane=lane, findings=findings)
+                    except AgentProtocolError as exc:
+                        # One bounded correction of the provider's final format;
+                        # never silently invent or apply decisions from invalid JSON.
+                        emit("retry", lane, f"返回格式校验未通过：{exc}。正在尝试一次格式修复。")
+                        repair = dict(payload)
+                        repair.pop("tools", None)
+                        repair.pop("tool_choice", None)
+                        repair["messages"] = [*payload["messages"],
+                            {"role": "assistant", "content": content},
+                            {"role": "user", "content": f"上一份结果未通过格式校验：{exc}。请仅修复返回格式，重新返回完整、简洁、有效的JSON对象。严格遵守当前通道的字段和候选数量约定，不添加工具调用或完整修改稿。"}]
+                        _check_active(stopped, deadline)
+                        calls += 1
+                        emit("progress", lane, f"正在请求模型，第 {calls} 次（格式修复）。", model_call=calls)
+                        repaired = self._post(repair, on_progress=lambda count: emit("progress", lane, f"已收到 {count} 个输出字符。", output_chars=count),
+                                              stream=on_event is not None, cancel_event=stopped, deadline=deadline)
+                        _check_active(stopped, deadline)
+                        try:
+                            if _extract_message(repaired).get("tool_calls"):
+                                raise AgentProtocolError("格式修复阶段不能调用工具")
+                            summary, decisions = _parse_lane(_extract_content(repaired), lane=lane, findings=findings)
+                        except AgentProtocolError as repair_error:
+                            label = "静态候选复核" if lane is ReviewLane.STATIC else "全文语义审查"
+                            raise AgentProtocolError(f"{label}返回格式仍不合格：{repair_error}；正文未修改。请稍后重试或更换模型。") from None
                     for decision in decisions:
                         emit("decision", lane, decision.reason, action=decision.action, rule=decision.rule)
                     emit("lane_complete", lane, summary)
@@ -246,7 +276,14 @@ class OpenAICompatibleAgent:
                 if access is None or "tools" not in payload:
                     raise AgentProtocolError("模型在不允许调用工具的阶段请求了工具")
                 validated = _validate_tool_calls(tool_calls)
-                payload["tool_choice"] = "auto"
+                content_lookup_attempted = content_lookup_attempted or any(
+                    call["function"]["name"] in {"search_workspace_text", "read_workspace_file"} for call in validated
+                )
+                payload["tool_choice"] = "auto" if content_lookup_attempted else "required"
+                if not content_lookup_attempted:
+                    # Listing paths is navigation, not verification. Require a
+                    # bounded content lookup before accepting a final review.
+                    payload["tools"] = [tool for tool in access.tool_definitions if tool["function"]["name"] != "list_workspace_files"]
                 payload["messages"].append({  # type: ignore[union-attr]
                     "role": "assistant", "content": message.get("content"), "tool_calls": validated,
                 })
@@ -539,7 +576,7 @@ def _read_stream(
         except (ValueError, TypeError, AttributeError, KeyError, IndexError):
             raise AgentProtocolError("模型流式响应格式不合法") from None
         now = time.monotonic()
-        if on_progress is not None and output_chars and (now - last_report >= 0.1 or finished):
+        if on_progress is not None and output_chars and (now - last_report >= 0.5 or finished):
             on_progress(output_chars)
             last_report = now
         return False
@@ -612,8 +649,8 @@ def _parse_lane(
             cleaned = "\n".join(lines[1:-1]).strip()
     try:
         data = json.loads(cleaned)
-    except json.JSONDecodeError:
-        raise AgentProtocolError("Agent 没有返回符合约定的 JSON") from None
+    except json.JSONDecodeError as exc:
+        raise AgentProtocolError(f"Agent 没有返回符合约定的 JSON（第{exc.lineno}行、第{exc.colno}列，{len(cleaned)}字符）") from None
     if not isinstance(data, dict):
         raise AgentProtocolError("Agent 审查结果必须是 JSON 对象")
 

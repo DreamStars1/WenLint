@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { buildApprovedRevision, changeContext, orderChanges, resolveSaveTarget } from './revision.js'
+import { projectAgentEvents } from './agent-events.js'
 
 const sourceText = ref('')
 const filename = ref('未命名文档.md')
@@ -89,7 +90,7 @@ const unconfirmedCount = computed(() => rewriteChanges.value.filter((item) => !c
 const rejectedCount = computed(() => rewriteChanges.value.filter((item) => changeChoices.value[item.id] === 'rejected').length)
 const hasAcceptedChanges = computed(() => activeRewriteChanges.value.length > 0)
 const agentStatus = computed(() => ({ idle: '准备就绪', running: '审查进行中', complete: '审查完成', error: '审查未完成', cancelled: '审查已取消' }[reviewState.value]))
-const visibleAgentEvents = computed(() => agentEvents.value.filter((event) => ['plan', 'tool_call', 'tool_start', 'tool_result', 'summary', 'decision', 'status', 'progress', 'lane_complete', 'error', 'complete', 'cancelled'].includes(event.kind)))
+const visibleAgentEvents = computed(() => projectAgentEvents(agentEvents.value, reviewState.value))
 const selectedChange = computed(() => rewriteChanges.value[selectedChangeIndex.value] || null)
 const selectedChangeContext = computed(() => (
   selectedChange.value ? changeContext(reviewSource.value, selectedChange.value.before) : null
@@ -438,6 +439,9 @@ async function runSemanticReview(demo = false) {
     while (!disposed) {
       const status = await callApi('agent_review_status', { job_id: agentJobId.value, after })
       if (!status.ok) throw new Error(status.error)
+      const feed = progressFeed.value
+      const followProgress = feed && feed.scrollHeight - feed.scrollTop - feed.clientHeight < 64
+      const previousSteps = visibleAgentEvents.value.length
       for (const event of status.events || []) {
         if (event.sequence > after) {
           agentEvents.value.push(event)
@@ -445,7 +449,9 @@ async function runSemanticReview(demo = false) {
         }
       }
       await nextTick()
-      if (progressFeed.value) progressFeed.value.scrollTop = progressFeed.value.scrollHeight
+      if (followProgress && progressFeed.value && visibleAgentEvents.value.length !== previousSteps) {
+        progressFeed.value.scrollTop = progressFeed.value.scrollHeight
+      }
       if (status.state === 'cancelled') {
         reviewState.value = 'cancelled'
         notify('已取消审查，正文未修改')
@@ -502,7 +508,7 @@ async function cancelReview() {
 }
 
 function eventLabel(kind) {
-  return { plan: '计划', tool_call: '调用工具', tool_start: '调用工具', tool_result: '工具结果', summary: '决策摘要', decision: '决策摘要', status: '进度', progress: '进度', lane_complete: '阶段完成', error: '错误', complete: '完成', cancelled: '已取消' }[kind] || '进度'
+  return { plan: '计划', model_request: '模型请求', tool_call: '调用工具', tool_start: '调用工具', tool_result: '工具结果', summary: '决策摘要', decision: '决策摘要', status: '进度', progress: '进度', retry: '格式修复', lane_complete: '阶段完成', error: '错误', complete: '完成', cancelled: '已取消' }[kind] || '进度'
 }
 
 function formatToolData(value) {
@@ -665,7 +671,7 @@ function actionName(action) {
           <p class="agent-explanation">实时呈现审查计划、工具调用与结果、判断依据摘要。</p>
           <div ref="progressFeed" class="agent-feed" role="log" aria-label="Agent 执行过程" aria-live="polite">
             <div v-if="!visibleAgentEvents.length" class="empty-state"><strong>{{ reviewState === 'running' ? '正在启动审查…' : '每一步都有迹可循' }}</strong><p>开始语义复核或免费体验，即可在这里查看审查过程。</p></div>
-            <article v-for="event in visibleAgentEvents" :key="event.sequence" :class="['agent-event', event.kind]"><div><b>{{ eventLabel(event.kind) }}</b><span v-if="event.lane">{{ event.lane }}</span><time>{{ ((event.elapsed_ms || 0) / 1000).toFixed(1) }}s</time></div><p>{{ event.message }}</p><details v-if="event.tool || event.arguments !== undefined || event.args !== undefined || event.result !== undefined" class="tool-details"><summary>{{ event.tool || '工具' }} · 查看{{ event.result !== undefined ? '结果' : '调用参数' }}</summary><pre v-if="event.arguments !== undefined || event.args !== undefined">{{ formatToolData(event.arguments ?? event.args) }}</pre><pre v-if="event.result !== undefined">{{ formatToolData(event.result) }}</pre></details></article>
+            <article v-for="event in visibleAgentEvents" :key="event.sequence" :class="['agent-event', event.kind]"><div><b>{{ eventLabel(event.kind) }}</b><span v-if="event.lane">{{ event.lane }}</span><time>{{ ((event.elapsed_ms || 0) / 1000).toFixed(1) }}s</time></div><p>{{ event.message }}</p><p v-if="event.kind === 'model_request'" class="stream-progress" aria-live="off"><span v-if="event.active" class="spinner"></span>{{ event.outputMessage || (event.active ? '等待模型输出…' : '本次请求已结束') }}<small v-if="event.outputElapsedMs !== undefined">{{ (event.outputElapsedMs / 1000).toFixed(1) }}s 更新</small></p><details v-if="event.tool || event.arguments !== undefined || event.args !== undefined || event.result !== undefined" class="tool-details"><summary>{{ event.tool || '工具' }} · 查看{{ event.result !== undefined ? '结果' : '调用参数' }}</summary><pre v-if="event.arguments !== undefined || event.args !== undefined">{{ formatToolData(event.arguments ?? event.args) }}</pre><pre v-if="event.result !== undefined">{{ formatToolData(event.result) }}</pre></details></article>
           </div>
           <div v-if="reviewState === 'error'" class="agent-outcome error"><strong>本次审查未完成</strong><p>{{ reviewError }}</p><button v-if="!browserDemo" class="tool-button" @click="settingsOpen = true">检查模型设置</button><button v-else class="tool-button" @click="startDemo">重试演示</button></div>
           <div v-else-if="reviewState === 'cancelled'" class="agent-outcome"><strong>已取消，正文保持不变。</strong><p>可调整正文或模型设置后重新开始。</p></div>

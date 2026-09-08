@@ -29,7 +29,7 @@ class ReviewJobs:
             with self._lock:
                 if job['state'] != 'running':
                     return
-                clean = {key: event[key] for key in ('kind', 'lane', 'message', 'tool', 'arguments', 'args', 'result') if key in event}
+                clean = {key: event[key] for key in ('kind', 'lane', 'message', 'tool', 'arguments', 'args', 'result', 'model_call', 'output_chars') if key in event}
                 clean.update(sequence=len(job['events']) + 1,
                              elapsed_ms=round((perf_counter() - job['started']) * 1000))
                 if len(job['events']) < 2000:
