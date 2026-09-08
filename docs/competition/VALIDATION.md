@@ -35,16 +35,16 @@ pnpm run build
 
 | 测试 | 当前证据 |
 |---|---|
-| Python 完整回归 | 最终代码298项测试在Linux Python3.11/3.13/3.14及Windows Python3.13全部通过，见[远程回归](https://github.com/DreamStars1/WenLint/actions/runs/34255640045) |
+| Python 完整回归 | 发行代码 `28d6fc4` 的341项测试在Linux Python3.11/3.13/3.14及Windows Python3.13全部通过，见[远程回归](https://github.com/DreamStars1/WenLint/actions/runs/34260097895) |
 | 前端测试与生产构建 | `pnpm test` 30/30；`pnpm build` 成功；桌面界面契约 3/3。包含真实Vue setup的mock bridge测试，验证partial→采纳→取消→续查及累计结果继承 |
 | demo 快照一致性 | `python demo/verify_demo.py`：17 条静态候选、3 个工作区文件、参考修改稿通过 |
 | 本地检查 / 首事件延迟 | 30次短文静态检查 P95 0.18ms；后台任务启动1.21ms、首次轮询事件1.22ms，见 [离线记录](../../demo/evidence/response-time-offline.json) |
 | 真实模型 smoke test | DeepSeek `deepseek-v4-flash`：短句首模型输出1.137s、完成2.317s、2次请求，见 [在线记录](../../demo/evidence/response-time-live.json)；工作区事实查证完成8.478s、3次请求、5次只读工具调用，指出20/30秒和Windows支持平台冲突并引用文件行号，见 [知识查证记录](../../demo/evidence/response-time-knowledge.json) |
 | 新用户视角流程 | 独立子agent完成真实DeepSeek审查、采纳/保留/撤销、全文核对和原生导出，文件读回证实只应用唯一采纳项；[完整成功、失败及质量记录](FIRST_USER_REVIEW.md)。模拟体验不是人类用户研究 |
 | Windows 打包与窗口 | Python3.13.15/PyInstaller6.22.2目录包自检退出0；真实修复包267字符全文审查23.5秒、35步骤、5次模型请求（含一次格式修复），首次观察0.985秒。原生另存为落盘已验证；本轮仍漏查基线，不能声称语义结果全面准确 |
-| macOS arm64 / x64 | 两种架构原生构建、298项Python测试、前端14项测试、packaged自检及工件上传全部成功，见[三平台构建](https://github.com/DreamStars1/WenLint/actions/runs/34255669816)；实际Mac窗口体验尚未验证 |
+| 三平台最终发行包 | `v0.6.0` 的Windows x64、macOS arm64/x64原生构建、341项Python测试、前端30项测试、packaged自检及公开发布全部成功，见[三平台构建](https://github.com/DreamStars1/WenLint/actions/runs/34260777300)；实际Mac窗口体验尚未验证 |
 
-推送后需将成功 Actions 运行链接和产物 SHA-256 加入发行记录。测试通过不能替代赛事审核、模型事实准确率评测或 macOS 人工体验。
+最终 [Release](https://github.com/DreamStars1/WenLint/releases/tag/v0.6.0) 已公开，三平台ZIP的SHA-256、构建提交和GitHub资产摘要已核对一致，见 [分发记录](DISTRIBUTION.md)。测试通过不能替代赛事审核、模型事实准确率评测或 macOS 人工体验。
 
 分发工具验证：PowerShell 脚本经 PowerShell AST 解析无错误，macOS 脚本经 Git Bash `bash -n` 通过；依赖声明收集在 Windows 虚拟环境成功处理 22 个 Python 分发及已安装的前端包。原生 Mac 构建不能由上述语法检查替代。
 

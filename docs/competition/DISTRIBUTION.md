@@ -2,9 +2,15 @@
 
 ## 获取应用
 
-在 GitHub 仓库 Actions 中手动运行 **build-desktop**（文件名保留为 `build-windows.yml`），完成后下载对应 artifact。推送 `v*` 标签时，所有平台测试和构建成功后统一发布到 GitHub Release。源代码推送本身不会生成发行标签。
+直接下载 [v0.6.0 Release](https://github.com/DreamStars1/WenLint/releases/tag/v0.6.0) 中对应平台的 ZIP。也可在 GitHub Actions 中手动运行 **build-desktop**（文件名保留为 `build-windows.yml`）生成工件。推送 `v*` 标签时，所有平台测试和构建成功后统一发布到 GitHub Release。
 
-0.6.0候选代码 `a14c65e` 已通过 [Windows、macOS arm64/x64原生构建与打包自检](https://github.com/DreamStars1/WenLint/actions/runs/34255669816)，三个工件均已上传成功。
+v0.6.0 对应提交 `28d6fc4a24df59d8f2ce74abecc4bf5989df08f2`，已通过 [Windows、macOS arm64/x64原生构建与打包自检](https://github.com/DreamStars1/WenLint/actions/runs/34260777300)，三个 ZIP、三份校验和与三份构建清单均已公开发布。已核对清单中的提交及 SHA-256 与 GitHub 资产摘要一致。
+
+| ZIP | SHA-256 |
+|---|---|
+| `WenLint-windows-x64.zip` | `8ccf8a7bc90b935071b376bf010010245395f1c27dc38fc792095e9448540c41` |
+| `WenLint-macos-arm64.zip` | `0c224fbce91aa8951f66aa495bad56ccba996689bb25591bde4d0a5a49cad678` |
+| `WenLint-macos-x64.zip` | `c65309c60a5f23dc37ddfeff85fbd87e1359014645ddddefb5c0d44f3746636e` |
 
 | 平台 | 构建环境 | 文件 | 启动方式 |
 |---|---|---|---|
