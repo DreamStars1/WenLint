@@ -1,0 +1,28 @@
+name: Bug report
+description: 报告可复现的错误或兼容性问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    attributes:
+      label: 问题描述
+      description: 请说明实际行为和预期行为；不要粘贴 API Key 或敏感正文。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 复现步骤
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: WenLint 版本
+      placeholder: 0.3.0
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: 操作系统与 Python 版本
+  - type: textarea
+    attributes:
+      label: 脱敏日志或最小示例

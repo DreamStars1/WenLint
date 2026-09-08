@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wenlint"
-version = "0.2.0"
+version = "0.3.0"
 description = "文尺 WenLint：中文写作静态检查器——像 ESLint 一样检查 PRD、论文、报告和 Markdown"
 readme = "README.md"
 license = { text = "MIT" }
@@ -20,11 +20,17 @@ classifiers = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.4,<10"]
+desktop = ["pywebview>=6,<7"]
+desktop-build = ["pyinstaller>=6.11,<7", "pywebview>=6,<7"]
 
 [project.scripts]
 wenlint = "wenlint.cli:main"
 wenlint-feishu = "wenlint.feishu.cli:main"
 wenlint-feedback = "wenlint.feedback:main"
+wenlint-desktop = "wenlint.desktop:main"
 
 [tool.setuptools]
 packages = ["wenlint", "wenlint.feishu"]
+
+[tool.setuptools.package-data]
+wenlint = ["desktop_ui/*.html", "desktop_ui/assets/*"]

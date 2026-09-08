@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 不是"AI 味检测器"。AI 套话只是其中一类规则。
-它是**确定性规则引擎**：快速、可解释、可复现，留好接 LLM 语义审查的接口。
+它以**确定性规则引擎**发现问题：快速、可解释、可复现；桌面版再由用户配置的 LLM Agent 裁决并生成修改稿。
 
 ```
 README.md:18:7   C001  warning     套话/废话填充  「总而言之」
@@ -20,10 +20,29 @@ prd.md:76:1      S001  suggestion  超长句         94 chars
 需要 **Python 3.11+**（推荐 3.13；CI 覆盖 3.11 / 3.13 / 3.14）。运行时无第三方 Python 依赖；飞书能力另需本机 `lark-cli`。
 
 ```bash
-pipx install wenlint                 # 推荐：隔离安装，获得 wenlint 与 wenlint-feishu
+pipx install git+https://github.com/DreamStars1/WenLint.git  # PyPI 发布前从仓库安装
 python -m pip install -e ".[test]"   # 开发：可编辑安装 + pytest
 # 或直接运行： python -m wenlint <path>
 ```
+
+### Windows 桌面版（Vue）
+
+面向不使用命令行的用户，桌面版提供完整工作台：打开或拖入 UTF-8 文本、选择检查场景、本地静态检查、填写 OpenAI-compatible `Base URL` / `API Key` / 模型名称、让内置 Agent 逐项裁决并生成修改稿。通过 Python 安装桌面命令时请使用 `python -m pip install ".[desktop]"`；发布的 EXE 已内置运行环境。
+
+- 双击 `WenLint.exe` 即可启动，无需单独安装 Python 或 Node。
+- API Key 只保存在当前进程内存中，不写配置文件或日志。
+- 点击 Agent 审查前会明确提示正文即将发送到哪个模型服务。
+- 修改稿先独立展示；只有用户点击“应用到编辑区”或“另存为”才会使用，不自动覆盖原文件。
+
+当前仓库的 Release 尚未发布预编译文件。开发者可在 Windows 上构建：
+
+```powershell
+python -m pip install -e ".[test,desktop-build]"
+./scripts/build-windows.ps1 -Python python
+# 输出：dist/WenLint.exe
+```
+
+标签 `v*` 或手动触发 `build-windows` 工作流时，CI 会运行完整测试、构建单文件 EXE、做无界面 smoke test，并上传 `WenLint-windows-x64` artifact 与 SHA-256；标签构建还会自动创建 GitHub Release。
 
 ### Codex Skill（npx skills）
 
@@ -47,12 +66,13 @@ wenlint . --fail-level warning      # 严格门禁：有 >= warning 时 exit 1
 wenlint 文档.md --json              # 结构化输出（供 Skill/LLM 消费）
 wenlint-feishu <docx-or-wiki-url> --json   # 飞书 Docx/Wiki 只读检查
 wenlint-feishu apply <url> --patch-file m.json --json  # 仅应用已批准章节 patch
+wenlint-desktop                       # 启动 Vue 桌面工作台（开发安装）
 ```
 
-**WenLint 不修改正文**——核心定案：只做"发现"。
+**WenLint 核心扫描器不修改正文**——核心定案：只做“发现”。
 飞书写回由 Skill 逐章批准后，通过 `wenlint-feishu apply` 执行局部 `block_replace`；inspect 路径永不写入。
 发现结果 = 定位 + 规则 ID + 命中文本 + 上下文 + review_hint；
-判断/查证/改写全部交给 Skill 的 LLM（见下"职责划分"）。
+判断/查证/改写交给 Skill 的 LLM，或桌面版中用户显式调用的内置 Agent（见下“职责划分”）。
 ## 规则
 
 | ID | 规则 | 级别 | 说明 |
@@ -128,7 +148,7 @@ M001/M002 同样只负责发现候选：决策日志中的纠偏记录可能必�
 
 ## 职责划分
 
-**WenLint 是工具，Skill 是 Agent。**
+**WenLint 扫描器是工具，Skill 或桌面 Agent 负责语义判断。**
 
 | WenLint（发现） | Skill / LLM（判断与修复） |
 | --- | --- |
@@ -217,7 +237,13 @@ wenlint-feedback stats --input .wenlint/feedback.jsonl --json
 ```bash
 pip install -e ".[test]"
 python -m pytest tests/     # 完整回归测试（本地扫描 + 飞书适配器）
+
+cd desktop-ui
+pnpm install --frozen-lockfile
+pnpm run build              # Vue 生产资源
 ```
+
+提交规范、安全问题报告方式和公开路线图分别见 [CONTRIBUTING.md](CONTRIBUTING.md)、[SECURITY.md](SECURITY.md) 与 [ROADMAP.md](ROADMAP.md)。
 
 ## 仓库结构
 
@@ -228,11 +254,15 @@ wenlint/
 │   ├── scanner.py       # 扫描引擎（mask 后规则分发 + 语言守卫）
 │   ├── markdown.py      # Markdown 保护层（行角色分类 + 等长 mask）
 │   ├── cli.py           # 本地文件路由 + review 步骤编排
+│   ├── agent.py         # OpenAI-compatible Agent + 严格 JSON 契约
+│   ├── desktop.py       # pywebview 本地桥接（文件/扫描/Agent/保存）
 │   ├── feedback.py      # 本地四分类反馈 JSONL（无网络）
 │   ├── feishu/          # 飞书 Docx/Wiki 检查与安全写回（wenlint/feishu/）
 │   └── __init__.py      # 版本
 ├── tests/               # pytest 回归（本地 + 飞书）
-├── pyproject.toml       # packaging（wenlint / wenlint-feishu / wenlint-feedback）
+├── desktop-ui/          # Vue 3 + Vite 桌面界面
+├── scripts/             # Windows 单文件 EXE 构建入口
+├── pyproject.toml       # packaging（含 wenlint-desktop）
 ├── LICENSE              # MIT
 └── README.md
 ```

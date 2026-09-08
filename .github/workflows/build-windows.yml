@@ -1,0 +1,55 @@
+name: build-windows
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: desktop-ui/pnpm-lock.yaml
+      - run: python -m pip install -e ".[test,desktop-build]"
+      - run: python -m pytest -q --basetemp=.pytest-basetemp-ci
+      - name: Build single-file desktop app
+        shell: pwsh
+        run: ./scripts/build-windows.ps1 -Python python
+      - name: Smoke test packaged executable
+        shell: pwsh
+        run: |
+          $process = Start-Process -FilePath ./dist/WenLint.exe -ArgumentList "--self-test" -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode -ne 0) { throw "Desktop smoke test failed" }
+      - name: Write checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash ./dist/WenLint.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  WenLint.exe" | Set-Content -Encoding ascii ./dist/WenLint.exe.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WenLint-windows-x64
+          path: |
+            dist/WenLint.exe
+            dist/WenLint.exe.sha256
+          if-no-files-found: error
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$env:GITHUB_REF_NAME" ./dist/WenLint.exe ./dist/WenLint.exe.sha256 --generate-notes --verify-tag

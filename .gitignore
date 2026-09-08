@@ -12,6 +12,11 @@ __pycache__/
 *.egg-info/
 build/
 dist-test/
+dist/
 .venv-dist-test/
+.venv-desktop/
 .pytest-*/
+
+desktop-ui/node_modules/
+desktop-ui/dist/
 

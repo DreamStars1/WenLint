@@ -1,0 +1,19 @@
+name: Feature request
+description: 建议规则、工作流或桌面体验改进
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    attributes:
+      label: 使用场景
+      description: 谁在什么文档流程中遇到了什么问题？
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 建议方案
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 可验证的完成标准
