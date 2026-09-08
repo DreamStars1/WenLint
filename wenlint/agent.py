@@ -8,7 +8,9 @@ user-selected model, then validates the model's proposed review and revision.
 from __future__ import annotations
 
 import json
+import re
 import socket
+import ssl
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -28,7 +30,10 @@ MAX_TEXT_CHARS = 200_000
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 MAX_TOOL_ROUNDS = 3
 MAX_TOOL_CALLS = 8
-MAX_REVIEW_SECONDS = 120.0
+MAX_REVIEW_SECONDS = 300.0
+# A cancelled caller can return before urllib finishes connecting. Keep the
+# transport permit until that worker actually exits, across all review jobs.
+_TRANSPORT_SLOTS = threading.BoundedSemaphore(4)
 
 
 class ReviewLane(str, Enum):
@@ -173,7 +178,7 @@ class OpenAICompatibleAgent:
         """Run independent review lanes and derive the revision locally."""
 
         self.config.validate()
-        deadline = time.monotonic() + min(self.config.timeout, MAX_REVIEW_SECONDS)
+        deadline = time.monotonic() + MAX_REVIEW_SECONDS
         stopped = cancel_event if cancel_event is not None else threading.Event()
         event_lock = threading.Lock()
 
@@ -240,6 +245,7 @@ class OpenAICompatibleAgent:
                 calls += 1
                 response = self._post(
                     payload, on_progress=lambda count: emit("progress", lane, f"已收到 {count} 个输出字符。", output_chars=count),
+                    on_preview=lambda preview: emit('preview', lane, preview),
                     stream=on_event is not None, cancel_event=stopped, deadline=deadline,
                 )
                 _check_active(stopped, deadline)
@@ -265,6 +271,7 @@ class OpenAICompatibleAgent:
                         calls += 1
                         emit("progress", lane, f"正在请求模型，第 {calls} 次（格式修复）。", model_call=calls)
                         repaired = self._post(repair, on_progress=lambda count: emit("progress", lane, f"已收到 {count} 个输出字符。", output_chars=count),
+                                              on_preview=lambda preview: emit('preview', lane, preview),
                                               stream=on_event is not None, cancel_event=stopped, deadline=deadline)
                         _check_active(stopped, deadline)
                         try:
@@ -387,38 +394,68 @@ class OpenAICompatibleAgent:
     def _post(
         self, payload: dict[str, object], *, stream: bool = False,
         on_progress: Callable[[int], None] | None = None,
+        on_preview: Callable[[str], None] | None = None,
         cancel_event: threading.Event | None = None, deadline: float | None = None,
     ) -> dict[str, object]:
         """Keep cancellation responsive even while Windows waits inside SSL read."""
         cancel_event = cancel_event if cancel_event is not None else threading.Event()
-        deadline = deadline if deadline is not None else time.monotonic() + min(self.config.timeout, MAX_REVIEW_SECONDS)
+        deadline = deadline if deadline is not None else time.monotonic() + MAX_REVIEW_SECONDS
         if not stream:
             return self._post_response(payload, stream=False, on_progress=on_progress, cancel_event=cancel_event, deadline=deadline)
         done = threading.Event()
         outcome: list[Any] = []
+        last_activity = [time.monotonic()]
+        transport_stop = threading.Event()
+        transport_slots = _TRANSPORT_SLOTS
+
+        class RequestCancellation:
+            def is_set(self):
+                return transport_stop.is_set() or cancel_event.is_set()
+
+        request_cancel = RequestCancellation()
+
+        def activity():
+            last_activity[0] = time.monotonic()
 
         def receive() -> None:
             try:
-                outcome.append(self._post_response(payload, stream=True, on_progress=on_progress, cancel_event=cancel_event, deadline=deadline))
+                outcome.append(self._post_response(payload, stream=True, on_progress=on_progress, cancel_event=request_cancel, deadline=deadline,
+                                                   on_preview=on_preview, on_activity=activity))
             except Exception as exc:
                 outcome.append(exc)
             finally:
+                transport_slots.release()
                 done.set()
 
         _check_active(cancel_event, deadline)
-        threading.Thread(target=receive, daemon=True, name="wenlint-model-stream").start()
-        while not done.wait(0.1):
+        if not transport_slots.acquire(blocking=False):
+            raise AgentConnectionError("之前的模型连接正在关闭，请稍后重试")
+        try:
+            threading.Thread(target=receive, daemon=True, name="wenlint-model-stream").start()
+        except Exception:
+            transport_slots.release()
+            raise
+        try:
+            while not done.wait(0.1):
+                _check_active(cancel_event, deadline)
+                if time.monotonic() - last_activity[0] >= self.config.timeout:
+                    raise AgentConnectionError(f"连续 {self.config.timeout:g} 秒未收到模型数据，请检查代理连接或稍后重试")
             _check_active(cancel_event, deadline)
-        _check_active(cancel_event, deadline)
-        result = outcome[0]
-        if isinstance(result, Exception):
-            raise result
-        return result
+            result = outcome[0]
+            if isinstance(result, Exception):
+                raise result
+            return result
+        finally:
+            # Wake the socket watcher on idle timeout too. Do not set the shared
+            # review token: a sibling lane must not mask this error as cancellation.
+            transport_stop.set()
 
     def _post_response(
         self, payload: dict[str, object], *, stream: bool,
         on_progress: Callable[[int], None] | None,
         cancel_event: threading.Event, deadline: float,
+        on_preview: Callable[[str], None] | None = None,
+        on_activity: Callable[[], None] | None = None,
     ) -> dict[str, object]:
         _check_active(cancel_event, deadline)
         if stream:
@@ -437,14 +474,14 @@ class OpenAICompatibleAgent:
             method="POST",
         )
         try:
-            timeout = min(self.config.timeout, MAX_REVIEW_SECONDS)
-            if stream or len(payload.get("messages", [])) > 2:
-                timeout = min(timeout, 15.0, max(0.01, deadline - time.monotonic()))
+            timeout = min(self.config.timeout, MAX_REVIEW_SECONDS, max(0.01, deadline - time.monotonic()))
             with self._opener(request, timeout=timeout) as response:
+                if on_activity:
+                    on_activity()
                 _check_active(cancel_event, deadline)
                 headers = getattr(response, "headers", {})
                 if stream and "text/event-stream" in headers.get("Content-Type", "").lower():
-                    return _read_stream(response, cancel_event, deadline, on_progress)
+                    return _read_stream(response, cancel_event, deadline, on_progress, on_preview, on_activity)
                 watcher_done = _watch_response(response, cancel_event, deadline)
                 try:
                     # Legacy injected openers need only implement read(). Stream
@@ -454,12 +491,26 @@ class OpenAICompatibleAgent:
                 finally:
                     watcher_done.set()
         except HTTPError as exc:
+            hints = {401: "API Key 无效或已失效，请检查密钥", 403: "请求被拒绝，请检查账户权限或代理规则",
+                     404: "接口或模型不存在，请检查 Base URL 和模型名称", 407: "代理需要认证，请检查系统代理",
+                     429: "请求过于频繁或账户额度不足，请稍后重试或检查额度"}
             raise AgentConnectionError(
-                f"模型服务返回 HTTP {exc.code}，请核对 Base URL、API Key 和模型名称"
+                f"模型服务返回 HTTP {exc.code}，" + hints.get(exc.code, "服务暂时不可用，请稍后重试")
             ) from None
-        except (URLError, OSError):
+        except (URLError, OSError) as exc:
             _check_active(cancel_event, deadline)
-            raise AgentConnectionError("无法连接模型服务，请核对地址、网络和超时设置") from None
+            reason = exc.reason if isinstance(exc, URLError) else exc
+            if isinstance(reason, (TimeoutError, socket.timeout)):
+                message = "等待模型响应超时，请检查代理连接或稍后重试"
+            elif isinstance(reason, ssl.SSLCertVerificationError):
+                message = "模型连接的证书校验失败，请检查系统时间、受信任证书和代理设置"
+            elif isinstance(reason, socket.gaierror):
+                message = "无法解析模型服务或代理地址，请检查 Base URL、DNS 和代理设置"
+            elif isinstance(reason, ConnectionRefusedError):
+                message = "模型服务或代理拒绝连接，请检查代理是否运行及地址端口"
+            else:
+                message = "模型网络连接中断，请检查网络和系统代理后重试"
+            raise AgentConnectionError(message) from None
         if len(raw) > MAX_RESPONSE_BYTES:
             raise AgentProtocolError("模型响应超过允许大小")
         try:
@@ -527,6 +578,8 @@ def _watch_response(response: Any, cancel_event: threading.Event, deadline: floa
 def _read_stream(
     response: Any, cancel_event: threading.Event, deadline: float,
     on_progress: Callable[[int], None] | None,
+    on_preview: Callable[[str], None] | None = None,
+    on_activity: Callable[[], None] | None = None,
 ) -> dict[str, object]:
     """Consume SSE incrementally; never expose or retain reasoning deltas."""
     content: list[str] = []
@@ -536,9 +589,10 @@ def _read_stream(
     last_report = 0.0
     finished = False
     pending: list[str] = []
+    preview_text = ''
 
     def consume(data: str) -> bool:
-        nonlocal output_chars, last_report, finished
+        nonlocal output_chars, last_report, finished, preview_text
         if data == "[DONE]":
             finished = True
             return True
@@ -585,6 +639,11 @@ def _read_stream(
         now = time.monotonic()
         if on_progress is not None and output_chars and (now - last_report >= 0.5 or finished):
             on_progress(output_chars)
+            if on_preview:
+                preview = _summary_preview(''.join(content))
+                if preview and preview != preview_text:
+                    on_preview(preview)
+                    preview_text = preview
             last_report = now
         return False
 
@@ -593,6 +652,8 @@ def _read_stream(
         while True:
             _check_active(cancel_event, deadline)
             line = response.readline(MAX_RESPONSE_BYTES + 1)
+            if line and on_activity:
+                on_activity()
             _check_active(cancel_event, deadline)
             if not line:
                 if pending:
@@ -619,6 +680,25 @@ def _read_stream(
     if tool_calls:
         message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
     return {"choices": [{"message": message}]}
+
+
+def _summary_preview(content: str) -> str:
+    """Decode only the public summary string, including a partial JSON string.
+
+    This is a labelled, unvalidated preview; it can never create a decision.
+    Incomplete escapes remain hidden until the next chunk arrives.
+    """
+    match = re.search(r'"summary"\s*:\s*"((?:\\.|[^"\\])*)', content[:6000])
+    if not match:
+        return ''
+    value = match.group(1)
+    for trim in range(min(7, len(value) + 1)):
+        try:
+            decoded = json.loads('"' + (value[:-trim] if trim else value) + '"')
+            return decoded[:500].encode('utf-8', errors='replace').decode('utf-8')
+        except (ValueError, UnicodeError):
+            continue
+    return ''
 
 
 def _extract_content(response: dict[str, object]) -> str:

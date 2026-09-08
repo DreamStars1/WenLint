@@ -57,7 +57,7 @@ def test_stream_progress_is_incremental_and_never_exposes_reasoning():
 
     def opener(request, *, timeout):
         assert json.loads(request.data)["stream"] is True
-        assert timeout <= 15
+        assert 20 < timeout <= 90
         return Observed(prefix + event({"content": '"已完成","decisions":[]}'}, "stop") + b"data: [DONE]\n\n")
 
     def receive(item):

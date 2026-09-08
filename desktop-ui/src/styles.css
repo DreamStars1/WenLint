@@ -375,3 +375,13 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   .editor-welcome h1 { font-size: 20px; }
   .status-bar { font-size: 10px; padding: 0 10px; }
 }
+
+.clarification-form { display: grid; gap: 10px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+.clarification-form label { font-size: 13px; font-weight: 600; }
+.clarification-form textarea { width: 100%; resize: vertical; min-height: 110px; padding: 10px; border: 1px solid var(--border-strong); border-radius: 5px; color: var(--text); background: white; font: inherit; line-height: 1.7; }
+.clarification-form p { margin: 0; font-size: 11px; line-height: 1.7; color: var(--muted); overflow-wrap: anywhere; }
+.clarification-form .clarification-error { color: var(--red); }
+.clarification-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.clarification-heading { position: sticky; top: -14px; z-index: 3; padding: 9px 0; background: #fbfcfd; }
+.clarification-heading > button { margin-left: auto; }
+.context-inspector { max-height: 65%; }

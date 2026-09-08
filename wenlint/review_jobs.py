@@ -11,7 +11,7 @@ class ReviewJobs:
         self._lock = Lock()
         self._jobs = {}
 
-    def start(self, run):
+    def start(self, run, *, message='已开始：本地检查 → 语义复核与按需查证 → 逐项确认修改'):
         with self._lock:
             if any(job['state'] == 'running' for job in self._jobs.values()):
                 return {'ok': False, 'error': '已有审查正在运行，请先取消'}
@@ -35,7 +35,7 @@ class ReviewJobs:
                 if len(job['events']) < 2000:
                     job['events'].append(clean)
 
-        emit({'kind': 'plan', 'message': '已开始：本地检查 → 语义复核与按需查证 → 逐项确认修改'})
+        emit({'kind': 'plan', 'message': message})
 
         def worker():
             try:

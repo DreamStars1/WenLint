@@ -101,3 +101,37 @@ test('segment progress remains visible and closes model activity at coordinator 
   assert.equal(rows[1].active, false)
   assert.deepEqual(rows[2], completed)
 })
+
+test('continuous previews replace their own request summary without growing the visible timeline', () => {
+  const history = [request(1, 'semantic'), request(2, 'static')]
+  for (let index = 0; index < 120; index++) {
+    history.push({ sequence: history.length + 1, kind: 'preview', lane: 'semantic', message: `需要补充上线日期，已核对 ${index + 1} 项` })
+    history.push({ sequence: history.length + 1, kind: 'preview', lane: 'static', message: `已确认 ${index + 1} 条表达建议` })
+  }
+  const before = structuredClone(history)
+  const rows = projectAgentEvents(history)
+  assert.equal(rows.length, 2)
+  assert.equal(rows[0].preview, '需要补充上线日期，已核对 120 项')
+  assert.equal(rows[1].preview, '已确认 120 条表达建议')
+  assert.equal(rows[0].active, true)
+  assert.deepEqual(history, before)
+  const completed = projectAgentEvents(history, 'complete')
+  assert.equal(completed[0].preview, rows[0].preview)
+  assert.equal(completed[0].active, false)
+})
+
+test('a repair or follow-up request never inherits an earlier request preview', () => {
+  const rows = projectAgentEvents([
+    request(1, 'semantic'),
+    { sequence: 2, kind: 'preview', lane: 'semantic', message: '未校验的旧摘要' },
+    { sequence: 3, kind: 'retry', lane: 'semantic', message: '修复格式' },
+    { sequence: 4, kind: 'preview', lane: 'semantic', message: '已结束请求的迟到内容' },
+    request(5, 'semantic', 2),
+    output(6, 'semantic', 20),
+  ])
+  assert.equal(rows.length, 3)
+  assert.equal(rows[0].preview, '未校验的旧摘要')
+  assert.equal(rows[0].active, false)
+  assert.equal(rows[2].preview, undefined)
+  assert.equal(rows[2].active, true)
+})

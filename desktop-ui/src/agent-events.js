@@ -1,4 +1,4 @@
-const visibleKinds = new Set(['plan', 'tool_call', 'tool_start', 'tool_result', 'summary', 'decision', 'status', 'progress', 'retry', 'segment_start', 'segment_complete', 'lane_complete', 'error', 'complete', 'cancelled'])
+const visibleKinds = new Set(['plan', 'tool_call', 'tool_start', 'tool_result', 'summary', 'preview', 'decision', 'status', 'progress', 'retry', 'segment_start', 'segment_complete', 'lane_complete', 'error', 'complete', 'cancelled'])
 const requestPattern = /^正在请求模型，第\s*(\d+)\s*次[。.]?$/u
 const outputPattern = /^已收到\s*(\d+)\s*个输出字符[。.]?$/u
 const requestBoundaries = new Set(['tool_call', 'tool_start', 'tool_result', 'decision', 'retry', 'segment_start', 'segment_complete', 'lane_complete', 'error', 'complete', 'cancelled'])
@@ -33,6 +33,11 @@ export function projectAgentEvents(events, reviewState = 'running') {
       }
       row.outputMessage = event.message
       row.outputElapsedMs = event.elapsed_ms
+      continue
+    }
+    if (event.kind === 'preview') {
+      const row = requests.get(lane)
+      if (row?.active) row.preview = event.message
       continue
     }
 

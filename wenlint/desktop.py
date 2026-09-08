@@ -242,6 +242,33 @@ class DesktopApi:
     def agent_review_status(self, payload: object) -> dict[str, object]:
         return self._review_jobs.status(payload)
 
+    def start_clarification(self, payload: object) -> dict[str, object]:
+        """Use the same cancellable job transport for one author follow-up."""
+        if not isinstance(payload, dict):
+            return _failure('请求格式无效')
+        try:
+            from .clarification import clarify, clarification_target
+            text, _, _ = _document_request(payload)
+            decision = payload.get('decision')
+            if not isinstance(decision, dict):
+                raise ValueError('待补充的结论无效')
+            decision = dict(decision)
+            clarification_target(text, decision)
+            answer = _required_string(payload, 'answer', '补充信息')
+            if len(answer) > 2000:
+                raise ValueError('补充信息不能超过 2000 字')
+            config, _, _ = self._online_review_inputs({**payload, 'workspacePath': ''})
+        except (AgentError, ValueError) as exc:
+            return _failure(str(exc))
+
+        def run(emit, cancel):
+            try:
+                return clarify(OpenAICompatibleAgent(config), text, decision, answer,
+                               on_event=emit, cancel_event=cancel)
+            except (AgentError, ValueError) as exc:
+                return _failure(str(exc))
+        return self._review_jobs.start(run, message='已开始：补充信息 → 生成改写 → 查看 diff 并确认')
+
     def cancel_agent_review(self, payload: object) -> dict[str, object]:
         return self._review_jobs.cancel(payload)
 

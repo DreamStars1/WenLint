@@ -42,6 +42,10 @@ const sourceEditor = ref(null)
 const version = ref('0.5.0')
 const standaloneSha256 = ref('')
 const changeChoices = ref({})
+const clarificationDrafts = ref({})
+const clarificationError = ref('')
+const clarificationId = ref(null)
+const clarificationInput = ref(null)
 const agentEvents = ref([])
 const agentJobId = ref('')
 const agentStartedAt = ref(0)
@@ -68,9 +72,9 @@ const workspace = reactive({
 })
 const toast = reactive({ visible: false, kind: 'info', message: '' })
 const config = reactive({
-  baseUrl: 'https://api.openai.com/v1',
+  baseUrl: 'https://api.deepseek.com',
   apiKey: '',
-  model: 'gpt-4.1-mini',
+  model: 'deepseek-v4-flash',
   profile: 'general',
 })
 
@@ -96,7 +100,7 @@ const unconfirmedCount = computed(() => rewriteChanges.value.filter((item) => !c
 const rejectedCount = computed(() => rewriteChanges.value.filter((item) => changeChoices.value[item.id] === 'rejected').length)
 const hasAcceptedChanges = computed(() => activeRewriteChanges.value.length > 0)
 const agentStatus = computed(() => ({ idle: '准备就绪', running: '审查进行中', partial: '部分已检查', complete: demoMode.value ? '离线演示完成' : '全文检查完成', error: '本轮审查未完成', cancelled: '本轮审查已取消' }[reviewState.value]))
-const visibleAgentEvents = computed(() => projectAgentEvents(agentEvents.value, reviewState.value))
+const visibleAgentEvents = computed(() => projectAgentEvents(agentEvents.value, busy.value === 'clarification' ? 'running' : reviewState.value))
 const selectedChange = computed(() => rewriteChanges.value[selectedChangeIndex.value] || null)
 const hasRevision = computed(() => !!reviewedAt.value && reviewState.value !== 'running' && rewriteChanges.value.length > 0)
 const pendingCount = computed(
@@ -171,7 +175,7 @@ onMounted(() => {
   if (window.pywebview?.api) connectBridge()
   else window.addEventListener('pywebviewready', connectBridge, { once: true })
   elapsedTimer = window.setInterval(() => {
-    if (reviewState.value === 'running') elapsedMs.value = Date.now() - agentStartedAt.value
+    if (reviewState.value === 'running' || busy.value === 'clarification') elapsedMs.value = Date.now() - agentStartedAt.value
   }, 250)
 })
 
@@ -182,6 +186,9 @@ onUnmounted(() => {
 })
 
 function clearSemanticResults() {
+  clarificationDrafts.value = {}
+  clarificationError.value = ''
+  clarificationId.value = null
   summary.value = ''
   decisions.value = []
   revisedText.value = ''
@@ -559,6 +566,98 @@ async function cancelReview() {
   }
 }
 
+async function submitClarification() {
+  const item = selectedDecision.value
+  if (busy.value || !item || !['ASK', 'VERIFY'].includes(item.action)) return
+  if (reviewIsStale.value) return notify('正文或场景已变化，请重新复核', 'error')
+  if (canContinue.value) return notify('请先完成剩余段落的检查，再补充信息生成改写', 'error')
+  if (browserDemo.value) return notify('请在桌面版配置模型后使用补充改写', 'error')
+  if (demoMode.value) return notify('离线示例不调用模型，请先运行真实语义复核', 'error')
+  const answer = clarificationDrafts.value[item.id]?.trim()
+  if (!answer) return notify('请先填写补充信息', 'error')
+  if (!config.apiKey.trim() || !config.baseUrl.trim() || !config.model.trim()) {
+    settingsOpen.value = true
+    return notify('请配置模型连接，补充信息会发送给该模型', 'error')
+  }
+  const requestedSource = reviewSource.value
+  const requestedProfile = config.profile
+  const offset = elapsedMs.value
+  busy.value = 'clarification'
+  clarificationId.value = item.id
+  clarificationError.value = ''
+  cancelling.value = false
+  agentJobId.value = ''
+  agentStartedAt.value = Date.now() - offset
+  try {
+    const started = await callApi('start_clarification', { ...currentReviewPayload(), text: requestedSource, decision: item, answer })
+    if (!started.ok) throw new Error(started.error)
+    agentJobId.value = started.job_id
+    let after = 0
+    let result
+    while (!disposed) {
+      const status = await callApi('agent_review_status', { job_id: agentJobId.value, after })
+      if (!status.ok) throw new Error(status.error)
+      for (const event of status.events || []) {
+        if (event.sequence > after) {
+          agentEvents.value.push({ ...event, sequence: agentEvents.value.length + 1, elapsed_ms: offset + (event.elapsed_ms || 0) })
+          after = event.sequence
+        }
+      }
+      if (status.state === 'cancelled') {
+        appendReviewStatus('cancelled', '补充改写已取消，输入和已有确认结果已保留。')
+        return
+      }
+      if (status.state === 'error') throw new Error(status.error || '补充改写失败，请重试')
+      if (status.state === 'complete') { result = status.result; break }
+      await new Promise(resolve => window.setTimeout(resolve, 250))
+    }
+    if (disposed) return
+    if (!result?.ok || !result.decision) throw new Error(result?.error || '没有收到改写建议')
+    if (sourceText.value !== requestedSource || config.profile !== requestedProfile) throw new Error('正文或场景已变化，请重新检查后再补充')
+    const updated = { ...result.decision, id: item.id, author_information: result.author_information || answer }
+    const next = decisions.value.map(old => old.id === item.id ? updated : old)
+    // Validate locations before exposing any model-produced proposal to rendering.
+    orderChanges(requestedSource, next.filter(d => d.action === 'REWRITE'))
+    const choices = retainChangeChoices(decisions.value, next, changeChoices.value)
+    if (updated.action === 'REWRITE') {
+      try {
+        buildApprovedRevision(requestedSource, next.filter(d => d.action === 'REWRITE'), { ...choices, [item.id]: 'accepted' })
+      } catch {
+        throw new Error('这条改写与已采纳的建议重叠。请先撤销相关建议，或补充更小的修改范围后重试；已有决定已保留。')
+      }
+    }
+    const revised = buildApprovedRevision(requestedSource, next.filter(d => d.action === 'REWRITE'), choices)
+    decisions.value = next
+    changeChoices.value = choices
+    revisedText.value = revised
+    modelCalls.value += result.modelCalls || 0
+    appendReviewStatus('complete', updated.action === 'REWRITE' ? '已生成补充改写，请查看 diff 并确认。' : '仍需补充信息，请回答新的问题。')
+    if (updated.action === 'REWRITE') {
+      selectedChangeIndex.value = rewriteChanges.value.findIndex(d => d.id === item.id)
+      activeTab.value = 'revision'
+      revisionMode.value = 'full'
+    } else {
+      // The next answer is separate, while the previous answer stays visible.
+      clarificationDrafts.value[item.id] = ''
+      activeTab.value = 'decisions'
+    }
+    notify(updated.action === 'REWRITE' ? '改写已生成，采纳后才会进入修改稿' : updated.reason, 'success')
+  } catch (error) {
+    clarificationError.value = error.message
+    appendReviewStatus('error', error.message)
+    notify(error.message, 'error')
+  } finally {
+    elapsedMs.value = Date.now() - agentStartedAt.value
+    cancelling.value = false
+    busy.value = ''
+  }
+}
+
+function focusClarification() {
+  clarificationInput.value?.focus()
+  clarificationInput.value?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+}
+
 function eventLabel(kind) {
   return { plan: '计划', model_request: '模型请求', tool_call: '调用工具', tool_start: '调用工具', tool_result: '工具结果', summary: '决策摘要', decision: '决策摘要', status: '进度', progress: '进度', retry: '格式修复', segment_start: '检查段落', segment_complete: '段落完成', lane_complete: '阶段完成', error: '错误', complete: '本轮结束', cancelled: '已取消' }[kind] || '进度'
 }
@@ -648,7 +747,7 @@ async function saveToOriginal() {
 }
 
 function actionName(action) {
-  return { KEEP: '保留', REWRITE: '改写', VERIFY: '待核实', ASK: '待确认' }[action] || action
+  return { KEEP: '保留', REWRITE: '改写', VERIFY: '待核实', ASK: '待补充' }[action] || action
 }
 </script>
 
@@ -664,21 +763,21 @@ function actionName(action) {
         <label class="profile-select"><span>场景</span><select v-model="config.profile" :disabled="!!busy"><option v-for="(label, key) in profileNames" :key="key" :value="key">{{ label }}</option></select></label>
         <button class="tool-button" :disabled="!apiReady || !!busy || !sourceText.trim()" @click="runStaticScan"><span v-if="busy === 'scan'" class="spinner"></span>{{ busy === 'scan' ? '检查中' : '本地检查' }}</button>
         <button class="tool-button primary" :disabled="!apiReady || !!busy || !sourceText.trim()" @click="requestSemanticReview"><span v-if="['prepare-review', 'review'].includes(busy)" class="spinner"></span>{{ busy === 'prepare-review' ? '准备中' : busy === 'review' ? '复核中' : browserDemo ? '演示审查' : '语义复核' }}</button>
-        <button v-if="reviewState === 'running'" class="tool-button" :disabled="!agentJobId || cancelling" @click="cancelReview">{{ cancelling ? '取消中' : '取消审查' }}</button>
+        <button v-if="reviewState === 'running' || busy === 'clarification'" class="tool-button" :disabled="!agentJobId || cancelling" @click="cancelReview">{{ cancelling ? '取消中' : '取消审查' }}</button>
         <button v-if="!browserDemo" class="icon-button" :class="{ active: settingsOpen }" title="模型设置" @click="settingsOpen = !settingsOpen">设置</button>
       </nav>
     </header>
 
     <section v-if="settingsOpen && !browserDemo" class="settings-drawer">
-      <div class="settings-heading"><div><strong>模型连接</strong><span>仅用于语义复核；密钥只保留在当前进程内存中</span></div><button @click="settingsOpen = false">关闭</button></div>
+      <div class="settings-heading"><div><strong>模型连接</strong><span>默认 DeepSeek；密钥仅保留在内存，连续 90 秒无数据才超时（单次最多 5 分钟）</span></div><button @click="settingsOpen = false">关闭</button></div>
       <div class="settings-grid">
-        <label><span>Base URL</span><input v-model="config.baseUrl" spellcheck="false" placeholder="https://api.example.com/v1" /></label>
+        <label><span>Base URL</span><input v-model="config.baseUrl" spellcheck="false" placeholder="https://api.deepseek.com" /></label>
         <label><span>API Key</span><div class="key-input"><input v-model="config.apiKey" :type="showKey ? 'text' : 'password'" spellcheck="false" placeholder="sk-••••••••" /><button @click="showKey = !showKey">{{ showKey ? '隐藏' : '显示' }}</button></div></label>
-        <label><span>模型名称</span><input v-model="config.model" spellcheck="false" placeholder="gpt-4.1-mini" /></label>
+        <label><span>模型名称</span><input v-model="config.model" spellcheck="false" placeholder="deepseek-v4-flash" /></label>
       </div>
     </section>
 
-    <section :class="['workbench', { 'with-workspace': workspace.visible, 'reviewing-revision': activeTab === 'revision' }]">
+    <section :class="['workbench', { 'with-workspace': workspace.visible, 'reviewing-revision': ['revision', 'decisions'].includes(activeTab) }]">
       <aside v-if="workspace.visible" class="workspace-panel">
         <header><div><span>工作区</span><strong :title="workspace.root">{{ workspace.name }}</strong></div><button title="收起工作区" @click="workspace.visible = false">‹</button></header>
         <div class="workspace-search"><input v-model="workspaceQuery" placeholder="筛选文件" spellcheck="false" /></div>
@@ -725,13 +824,13 @@ function actionName(action) {
         <div v-if="browserDemo || (demoMode && reviewState !== 'idle')" class="demo-notice">离线演示 · 使用本地规则和示例建议，不调用模型。{{ browserDemo ? '真实语义复核请使用桌面版并配置模型。' : '真实语义复核请配置模型。' }}</div>
 
         <section v-if="activeTab === 'agent'" class="tab-body agent-tab">
-          <header class="agent-heading"><div><strong>{{ agentStatus }}</strong><span>{{ (elapsedMs / 1000).toFixed(1) }} 秒 · {{ visibleAgentEvents.length }} 个步骤</span></div><button v-if="reviewState === 'running'" class="tool-button" :disabled="!agentJobId || cancelling" @click="cancelReview">{{ cancelling ? '取消中…' : '取消审查' }}</button></header>
+          <header class="agent-heading"><div><strong>{{ busy === 'clarification' ? '正在生成补充改写' : agentStatus }}</strong><span>{{ (elapsedMs / 1000).toFixed(1) }} 秒 · {{ visibleAgentEvents.length }} 个步骤</span></div><button v-if="reviewState === 'running' || busy === 'clarification'" class="tool-button" :disabled="!agentJobId || cancelling" @click="cancelReview">{{ cancelling ? '取消中…' : '取消审查' }}</button></header>
           <p class="agent-explanation">实时呈现审查计划、工具调用与结果、判断依据摘要。</p>
           <div ref="progressFeed" class="agent-feed" role="log" aria-label="Agent 执行过程" aria-live="polite">
             <div v-if="!visibleAgentEvents.length" class="empty-state"><strong>{{ reviewState === 'running' ? '正在启动审查…' : '每一步都有迹可循' }}</strong><p>开始语义复核或免费体验，即可在这里查看审查过程。</p></div>
-            <article v-for="event in visibleAgentEvents" :key="event.sequence" :class="['agent-event', event.kind]"><div><b>{{ eventLabel(event.kind) }}</b><span v-if="event.lane">{{ event.lane }}</span><time>{{ ((event.elapsed_ms || 0) / 1000).toFixed(1) }}s</time></div><p>{{ event.message }}</p><p v-if="event.kind === 'model_request'" class="stream-progress" aria-live="off"><span v-if="event.active" class="spinner"></span>{{ event.outputMessage || (event.active ? '等待模型输出…' : '本次请求已结束') }}<small v-if="event.outputElapsedMs !== undefined">{{ (event.outputElapsedMs / 1000).toFixed(1) }}s 更新</small></p><details v-if="event.tool || event.arguments !== undefined || event.args !== undefined || event.result !== undefined" class="tool-details"><summary>{{ event.tool || '工具' }} · 查看{{ event.result !== undefined ? '结果' : '调用参数' }}</summary><pre v-if="event.arguments !== undefined || event.args !== undefined">{{ formatToolData(event.arguments ?? event.args) }}</pre><pre v-if="event.result !== undefined">{{ formatToolData(event.result) }}</pre></details></article>
+            <article v-for="event in visibleAgentEvents" :key="event.sequence" :class="['agent-event', event.kind]"><div><b>{{ eventLabel(event.kind) }}</b><span v-if="event.lane">{{ event.lane }}</span><time>{{ ((event.elapsed_ms || 0) / 1000).toFixed(1) }}s</time></div><p>{{ event.message }}</p><p v-if="event.kind === 'model_request'" class="stream-progress" aria-live="off"><span v-if="event.active" class="spinner"></span>{{ event.outputMessage || (event.active ? '等待模型输出…' : '本次请求已结束') }}<small v-if="event.outputElapsedMs !== undefined">{{ (event.outputElapsedMs / 1000).toFixed(1) }}s 更新</small></p><p v-if="event.preview" class="model-preview"><small>结论摘要 · 生成中内容，尚未校验</small><br />{{ event.preview }}</p><details v-if="event.tool || event.arguments !== undefined || event.args !== undefined || event.result !== undefined" class="tool-details"><summary>{{ event.tool || '工具' }} · 查看{{ event.result !== undefined ? '结果' : '调用参数' }}</summary><pre v-if="event.arguments !== undefined || event.args !== undefined">{{ formatToolData(event.arguments ?? event.args) }}</pre><pre v-if="event.result !== undefined">{{ formatToolData(event.result) }}</pre></details></article>
           </div>
-          <div v-if="reviewState === 'error'" class="agent-outcome error"><strong>本次审查未完成</strong><p>{{ reviewError }}</p><button v-if="!browserDemo" class="tool-button" @click="settingsOpen = true">检查模型设置</button><button v-else class="tool-button" @click="startDemo">重试演示</button></div>
+          <div v-if="reviewState === 'error'" class="agent-outcome error"><strong>本次审查未完成</strong><p>{{ reviewError }}</p><button v-if="!browserDemo" class="tool-button" @click="settingsOpen = true">检查模型设置</button><button v-if="!browserDemo" class="tool-button primary" :disabled="!!busy" @click="requestSemanticReview">重新审查</button><button v-else class="tool-button" @click="startDemo">重试演示</button></div>
           <div v-else-if="reviewState === 'cancelled'" class="agent-outcome"><strong>本轮已取消，正文保持不变。</strong><p>{{ reviewSessionId ? '已有建议和确认决定已保留，可继续检查剩余段落。' : '可调整正文或模型设置后重新开始。' }}</p></div>
           <div v-else-if="['complete', 'partial'].includes(reviewState)" class="agent-outcome"><strong>{{ reviewState === 'partial' ? '截至当前：' : '' }}{{ rewriteChanges.length }} 条改写 · {{ unconfirmedCount }} 待确认 · {{ pendingCount }} 待核实或补充</strong><button class="tool-button primary" @click="activeTab = rewriteChanges.length ? 'revision' : 'decisions'">{{ rewriteChanges.length ? '查看修改建议' : '查看复核结论' }}</button></div>
         </section>
@@ -772,10 +871,21 @@ function actionName(action) {
               </button>
             </div>
             <div v-if="selectedDecision" class="detail-pane">
-              <div class="detail-heading"><span :class="['action-label', selectedDecision.action.toLowerCase()]">{{ actionName(selectedDecision.action) }}</span><strong>{{ selectedDecision.rule }}</strong></div>
+              <div class="detail-heading clarification-heading"><span :class="['action-label', selectedDecision.action.toLowerCase()]">{{ actionName(selectedDecision.action) }}</span><strong>{{ selectedDecision.rule }}</strong><button v-if="['ASK', 'VERIFY'].includes(selectedDecision.action)" class="tool-button" :disabled="!!busy" @click="focusClarification">补充信息 ↓</button></div>
               <h3>{{ selectedDecision.reason }}</h3>
               <ChangeDiff v-if="selectedDecision.action === 'REWRITE'" :source="reviewSource" :before="selectedDecision.before" :after="selectedDecision.after" :source-start="selectedDecision.source_start" />
               <div v-else-if="selectedDecision.before || selectedDecision.after" class="change-block"><div><span>原文</span><p>{{ selectedDecision.before || '—' }}</p></div><div><span>补充提示</span><p>{{ selectedDecision.after || '请结合上述结论核实或补充信息。' }}</p></div></div>
+              <form v-if="['ASK', 'VERIFY'].includes(selectedDecision.action)" class="clarification-form" @submit.prevent="submitClarification">
+                <label :for="`clarification-${selectedDecision.id}`">{{ selectedDecision.action === 'VERIFY' ? '补充核实结果或可靠来源' : '补充你的信息' }}</label>
+                <p v-if="selectedDecision.author_information">上次补充：{{ selectedDecision.author_information }}</p>
+                <textarea ref="clarificationInput" :id="`clarification-${selectedDecision.id}`" v-model="clarificationDrafts[selectedDecision.id]" rows="4" maxlength="2000" :disabled="!!busy" placeholder="根据上面的问题，填写具体的时间、负责人、范围或依据……" />
+                <p>发送相关原文片段和补充信息给 {{ config.model || '已配置的模型' }}（{{ config.baseUrl }}），生成后先查看 diff，再确认是否采纳。</p>
+                <p v-if="canContinue">请先完成剩余段落的检查，再生成补充改写。</p>
+                <p v-if="browserDemo">浏览器演示不调用模型，请在桌面版使用。</p>
+                <p v-else-if="demoMode">离线示例不调用模型，请先运行真实语义复核，再补充信息生成改写。</p>
+                <p v-if="clarificationId === selectedDecision.id && clarificationError" class="clarification-error" role="alert">{{ clarificationError }}</p>
+                <div class="clarification-actions"><button type="submit" class="tool-button primary" :disabled="!!busy || reviewIsStale || canContinue || browserDemo || demoMode || !clarificationDrafts[selectedDecision.id]?.trim()">{{ busy === 'clarification' && clarificationId === selectedDecision.id ? '正在生成…' : '补充并生成改写' }}</button><button v-if="busy === 'clarification'" type="button" class="tool-button" :disabled="!agentJobId || cancelling" @click="cancelReview">取消</button><button v-if="busy === 'clarification'" type="button" class="tool-button" @click="activeTab = 'agent'">查看输出过程</button></div>
+              </form>
               <button v-if="selectedDecision.action === 'REWRITE'" class="tool-button decision-review" @click="selectedChangeIndex = rewriteChanges.findIndex(item => item.id === selectedDecision.id); activeTab = 'revision'; revisionMode = 'full'">查看上下文并确认这条建议</button>
             </div>
           </template>
