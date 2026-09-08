@@ -2,40 +2,39 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import Any
 
 import pytest
 
 from wenlint.feishu.document import parse_document_ref
 from wenlint.feishu.inspection import inspect_document
 from wenlint.feishu.lark import LarkCliError
+from wenlint.feishu.models import FetchedDocument
 
 REF = parse_document_ref("https://acme.feishu.cn/docx/DocToken")
 WIKI_REF = parse_document_ref("https://acme.feishu.cn/wiki/WikiToken")
+RESOLVED = dataclasses.replace(
+    REF,
+    document_id="DocToken",
+    canonical_url="https://acme.feishu.cn/docx/DocToken",
+)
 
 
 class FakeClient:
-    def __init__(self, payload: dict[str, Any] | None = None) -> None:
+    def __init__(self, fetched: FetchedDocument | None = None) -> None:
         self.fetch_calls = 0
         self.replace_calls: list[tuple] = []
-        self.payload = payload or {
-            "ok": True,
-            "data": {
-                "document": {
-                    "document_id": "DocToken",
-                    "revision_id": 12,
-                    "url": "https://acme.feishu.cn/docx/DocToken",
-                },
-                "content": (
-                    '<h1 block-id="blkTitle">标题</h1>'
-                    '<p block-id="blkParagraph">普通正文可能含糊。</p>'
-                ),
-            },
-        }
+        self.fetched = fetched or FetchedDocument(
+            ref=RESOLVED,
+            revision_id=12,
+            xml=(
+                '<h1 block-id="blkTitle">标题</h1>'
+                '<p block-id="blkParagraph">普通正文可能含糊。</p>'
+            ),
+        )
 
     def fetch(self, ref):
         self.fetch_calls += 1
-        return self.payload
+        return self.fetched
 
     def replace_block(self, *args, **kwargs):
         self.replace_calls.append((args, kwargs))
@@ -61,17 +60,15 @@ def test_inspect_fetches_once_and_never_updates():
 
 def test_wiki_uses_returned_document_id_and_canonical_url():
     client = FakeClient(
-        {
-            "ok": True,
-            "data": {
-                "document": {
-                    "document_id": "ResolvedDoc",
-                    "revision_id": 3,
-                    "url": "https://acme.feishu.cn/docx/ResolvedDoc",
-                },
-                "content": '<p block-id="blk">正文。</p>',
-            },
-        }
+        FetchedDocument(
+            ref=dataclasses.replace(
+                WIKI_REF,
+                document_id="ResolvedDoc",
+                canonical_url="https://acme.feishu.cn/docx/ResolvedDoc",
+            ),
+            revision_id=3,
+            xml='<p block-id="blk">正文。</p>',
+        )
     )
     report = inspect_document(client, WIKI_REF)
     assert report.source["document_id"] == "ResolvedDoc"
@@ -79,14 +76,16 @@ def test_wiki_uses_returned_document_id_and_canonical_url():
 
 
 def test_malformed_fetch_fails_without_partial_findings():
-    client = FakeClient(
-        {
-            "ok": True,
-            "data": {
-                "document": {"document_id": "DocToken"},
-                "content": "<p>x</p>",
-            },
-        }
-    )
+    class BrokenClient:
+        def fetch(self, ref):
+            raise LarkCliError(
+                "missing_revision",
+                "fetch response is missing document revision_id",
+                retryable=False,
+            )
+
+        def replace_block(self, *args, **kwargs):
+            raise AssertionError("inspect must never update")
+
     with pytest.raises(LarkCliError):
-        inspect_document(client, REF)
+        inspect_document(BrokenClient(), REF)

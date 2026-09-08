@@ -12,7 +12,13 @@ import pytest
 
 from wenlint.feishu.document import DocumentRefError, parse_document_ref, resolve_fetched_docx_ref
 from wenlint.feishu.lark import LarkCliError, LarkClient
-from wenlint.feishu.models import ApprovedSectionPlan, InspectionReport, Patch
+from wenlint.feishu.models import (
+    ApprovedSectionPlan,
+    FetchedDocument,
+    InspectionReport,
+    Patch,
+    UpdateReceipt,
+)
 from wenlint.feishu.patches import (
     ManifestError,
     PatchValidationError,
@@ -57,15 +63,16 @@ def test_nested_duplicate_titles_reset_ordinals_under_each_parent():
     assert second.block_ids[0] == "b1"
 
 
-def test_fingerprint_tracks_resource_id_and_semantic_attrs_not_block_id():
+def test_fingerprint_tracks_semantic_attrs_not_id_dialects():
     base = '<h1 block-id="t">标题</h1><p block-id="b">正文。<cite id="resA">注</cite></p>'
-    renamed = '<h1 block-id="t2">标题</h1><p block-id="b2">正文。<cite id="resA">注</cite></p>'
+    renamed = '<h1 id="t2">标题</h1><p id="b2">正文。<cite id="resA">注</cite></p>'
     resource = '<h1 block-id="t">标题</h1><p block-id="b">正文。<cite id="resB">注</cite></p>'
     semantic = '<h1 block-id="t">标题</h1><p block-id="b" lang="zh">正文。<cite id="resA">注</cite></p>'
     nested = '<h1 block-id="t">标题</h1><p block-id="b">正文。<span><cite id="resA">注</cite></span></p>'
     base_fp = project_xml(base, REF, 1).sections[0].fingerprint
     assert project_xml(renamed, REF, 2).sections[0].fingerprint == base_fp
-    assert project_xml(resource, REF, 3).sections[0].fingerprint != base_fp
+    # id / block-id / block_id are volatile, including nested cite ids.
+    assert project_xml(resource, REF, 3).sections[0].fingerprint == base_fp
     assert project_xml(semantic, REF, 4).sections[0].fingerprint != base_fp
     assert project_xml(nested, REF, 5).sections[0].fingerprint != base_fp
 
@@ -260,17 +267,11 @@ def test_second_retry_preserves_non_conflict_error_kind(monkeypatch):
             self.xml = xml
 
         def fetch(self, ref):
-            return {
-                "ok": True,
-                "data": {
-                    "document": {
-                        "document_id": "DocToken",
-                        "revision_id": self.revision,
-                        "url": REF.canonical_url,
-                    },
-                    "content": self.xml,
-                },
-            }
+            return FetchedDocument(
+                ref=REF,
+                revision_id=self.revision,
+                xml=self.xml,
+            )
 
         def replace_block(self, ref, block_id, block_xml, revision_id):
             self.attempts += 1

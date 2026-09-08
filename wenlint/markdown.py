@@ -17,6 +17,10 @@ import re
 def line_role(line):
     """对一行做角色分类（vale scope 机制的轻量版）。
 
+    Single-line classification only. Lines that participate in a GFM pipe
+    table without a leading ``|`` stay ``paragraph`` here; use
+    :func:`classify_lines` when table context matters.
+
     Args:
         line: 原始行文本（未 strip）。
 
@@ -40,6 +44,207 @@ def line_role(line):
     if line.startswith(("    ", "\t")):
         return "fence"
     return "paragraph"
+
+
+_ATX_HEADING = re.compile(r"^(#{1,6})(?:[ \t]+|$)(.*)$")
+_ATX_CLOSING_HASHES = re.compile(r"[ \t]+#+$")
+_NUMBER_PREFIX = re.compile(
+    r"^(\d+(?:\.\d+)*)(?:\.|[、\s]|$)(.*)$"
+)
+_TABLE_DELIM_CELL = re.compile(r"^:?-{3,}:?$")
+
+
+def parse_atx_heading(line):
+    """Parse an ATX heading line into ``(level, title)`` when applicable.
+
+    Optional CommonMark closing hash sequences (``### ###``, ``### #``,
+    ``### Title ###``) are normalized away without dropping a visible title.
+
+    Args:
+        line: Raw line text.
+
+    Returns:
+        ``(level, title)`` for ATX headings; ``None`` otherwise. ``title`` may
+        be empty after stripping ``#`` and surrounding whitespace.
+    """
+    if line_role(line) != "heading":
+        return None
+    match = _ATX_HEADING.match(line.strip())
+    if not match:
+        return None
+    level = len(match.group(1))
+    title = (match.group(2) or "").strip()
+    title = _ATX_CLOSING_HASHES.sub("", title).strip()
+    if re.fullmatch(r"#+", title or ""):
+        title = ""
+    return level, title
+
+
+def classify_lines(lines):
+    """Classify each line with GFM pipe-table context awareness.
+
+    A no-leading-pipe header becomes ``table`` only when the next line is a
+    delimiter row. Following pipe-bearing data rows stay ``table`` until a
+    blank line or another block role. Ordinary prose that merely contains
+    ``|`` remains ``paragraph``.
+
+    Args:
+        lines: Document lines in order.
+
+    Returns:
+        list[str]: Per-line roles (same vocabulary as :func:`line_role`).
+    """
+    roles = [line_role(line) for line in lines]
+    i = 0
+    n = len(lines)
+    while i < n - 1:
+        if (
+            roles[i] in {"paragraph", "table"}
+            and _looks_like_pipe_row(lines[i])
+            and not is_table_delimiter_row(lines[i])
+            and is_table_delimiter_row(lines[i + 1])
+        ):
+            roles[i] = "table"
+            roles[i + 1] = "table"
+            j = i + 2
+            while j < n and _is_gfm_table_continuation(lines[j], roles[j]):
+                roles[j] = "table"
+                j += 1
+            i = j
+            continue
+        i += 1
+    return roles
+
+
+def _looks_like_pipe_row(line):
+    """Return whether a line has a pipe that could participate in a GFM row."""
+    return "|" in line.strip()
+
+
+def _is_gfm_table_continuation(line, role):
+    """Return whether ``line`` can extend an open no-leading-pipe GFM table."""
+    if role in {"blank", "heading", "fence", "blockquote", "list_item"}:
+        return False
+    if not line.strip():
+        return False
+    return _looks_like_pipe_row(line)
+
+
+def parse_heading_number(title):
+    """Parse an explicit Arabic dotted heading number prefix.
+
+    Accepts forms like ``3``, ``3.1``, ``3.1.2`` with an optional trailing
+    ``.``, Chinese顿号, or whitespace before the remainder.
+
+    Args:
+        title: Visible heading title without leading ``#`` markers.
+
+    Returns:
+        ``(parts, label)`` where ``parts`` is a tuple of ints and ``label`` is
+        the dotted number string; ``None`` when unsafe to compare.
+    """
+    stripped = title.strip()
+    if not stripped:
+        return None
+    match = _NUMBER_PREFIX.match(stripped)
+    if not match:
+        return None
+    raw = match.group(1)
+    # Reject trailing junk glued to digits without separator (already covered).
+    parts = tuple(int(piece) for piece in raw.split("."))
+    if not parts:
+        return None
+    return parts, raw
+
+
+def is_table_delimiter_row(line):
+    """Return whether a pipe row is a GFM alignment/delimiter row.
+
+    Accepts both leading-pipe and no-leading-pipe delimiter forms.
+
+    Args:
+        line: Raw table line.
+
+    Returns:
+        ``True`` for rows like ``|---|:---:|`` or ``--- | ---`` that must
+        not be scanned. Each cell needs at least three hyphens (GFM);
+        ``- | -`` is not a delimiter.
+    """
+    body = line.strip()
+    if not body or "|" not in body:
+        return False
+    if body.startswith("|"):
+        body = body[1:]
+    if body.endswith("|"):
+        body = body[:-1]
+    cells = [cell.strip() for cell in body.split("|")]
+    if not cells or not any(cells):
+        return False
+    return all(_TABLE_DELIM_CELL.fullmatch(cell or "") for cell in cells)
+
+
+def iter_table_cells(line):
+    """Yield ``(start_col_1based, cell_text)`` for GFM pipe-table cells.
+
+    Inline code and escaped pipes stay inside their owning cell so scanner
+    column offsets remain aligned with the original line. Works for rows
+    with or without a leading pipe once the caller has established table
+    context.
+
+    Args:
+        line: Raw table line (not a delimiter row).
+
+    Yields:
+        Pairs of one-based start column and raw cell text (without outer
+        padding used only for splitting).
+    """
+    if "|" not in line or is_table_delimiter_row(line):
+        return
+    i = 0
+    n = len(line)
+    # Optional leading pipe.
+    if i < n and line[i] == "|":
+        i += 1
+    while i < n:
+        while i < n and line[i] == " ":
+            i += 1
+        if i >= n:
+            break
+        if line[i] == "|" and i == n - 1:
+            break
+        cell_start = i
+        cell_chars = []
+        in_code = False
+        while i < n:
+            ch = line[i]
+            if ch == "`":
+                in_code = not in_code
+                cell_chars.append(ch)
+                i += 1
+                continue
+            if ch == "\\" and i + 1 < n and not in_code:
+                cell_chars.append(ch)
+                cell_chars.append(line[i + 1])
+                i += 2
+                continue
+            if ch == "|" and not in_code:
+                break
+            cell_chars.append(ch)
+            i += 1
+        raw_cell = "".join(cell_chars)
+        # Trim one trailing space run for cell content boundaries, but keep
+        # column pointing at the first non-space character when present.
+        stripped = raw_cell.strip()
+        if stripped:
+            lead = len(raw_cell) - len(raw_cell.lstrip())
+            yield cell_start + lead + 1, stripped
+        elif raw_cell == "" and i < n and line[i] == "|":
+            # Empty cell between pipes still occupies a slot; skip scanning.
+            pass
+        if i < n and line[i] == "|":
+            i += 1
+        else:
+            break
 
 
 def _blank(s):

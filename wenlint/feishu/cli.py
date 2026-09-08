@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Sequence
 
 from wenlint import __version__
-from wenlint.feishu.document import DocumentRefError, parse_document_ref, resolve_fetched_docx_ref
+from wenlint.feishu.document import DocumentRefError, parse_document_ref
 from wenlint.feishu.inspection import inspect_document
 from wenlint.feishu.lark import LarkCliError, LarkClient
 from wenlint.feishu.patches import (
@@ -62,26 +62,9 @@ def _cmd_apply(args: argparse.Namespace) -> int:
         client = LarkClient()
         client.probe()
         # Resolve document identity before comparing the manifest document_id.
-        payload = client.fetch(ref)
-        data = payload.get("data") if isinstance(payload, dict) else None
-        document = data.get("document") if isinstance(data, dict) else None
-        if not isinstance(document, dict):
-            raise LarkCliError(
-                "invalid_response",
-                "fetch response is missing document metadata",
-                retryable=False,
-            )
-        document_id = document.get("document_id")
-        url = document.get("url")
-        if not document_id or not url:
-            raise LarkCliError(
-                "unresolved_document",
-                "fetch response did not resolve a Docx document id and URL",
-                retryable=False,
-            )
-        resolved = resolve_fetched_docx_ref(ref, str(document_id), str(url))
-        plan = load_manifest(Path(args.patch_file), resolved)
-        result = apply_approved_section(client, resolved, plan)
+        fetched = client.fetch(ref)
+        plan = load_manifest(Path(args.patch_file), fetched.ref)
+        result = apply_approved_section(client, fetched.ref, plan)
     except DocumentRefError as exc:
         return _emit_error(exc.kind, str(exc), retryable=False, exit_code=2)
     except ManifestError as exc:

@@ -99,12 +99,12 @@ def test_fingerprint_distinguishes_text_child_boundary_and_tail():
     assert len(fps) == 3
 
 
-def test_fingerprint_keeps_resource_id_ignores_only_volatile_ids():
+def test_fingerprint_ignores_all_id_dialects_including_nested():
     with_resource = fromstring('<p block-id="a" revision-id="9"><cite id="resA">注</cite></p>')
-    renamed_block = fromstring('<p block-id="b" revision_id="1"><cite id="resA">注</cite></p>')
-    other_resource = fromstring('<p block-id="a"><cite id="resB">注</cite></p>')
+    renamed_block = fromstring('<p id="b" revision_id="1"><cite id="resA">注</cite></p>')
+    other_resource = fromstring('<p block_id="a"><cite id="resB">注</cite></p>')
     assert section_fingerprint(with_resource) == section_fingerprint(renamed_block)
-    assert section_fingerprint(with_resource) != section_fingerprint(other_resource)
+    assert section_fingerprint(with_resource) == section_fingerprint(other_resource)
 
 
 def test_owning_section_picks_deepest_nested_body_owner():

@@ -35,6 +35,38 @@ class DocumentRef:
 
 
 @dataclass(frozen=True)
+class FetchedDocument:
+    """Normalized document snapshot returned by a document gateway fetch.
+
+    Attributes:
+        ref: Resolved Docx reference with ``document_id`` and canonical URL.
+        revision_id: Positive document revision from the fetch response.
+        xml: Full XML body already past size/schema gates (still projected
+            separately for DTD/ENTITY and structure checks).
+    """
+
+    ref: DocumentRef
+    revision_id: int
+    xml: str
+
+
+@dataclass(frozen=True)
+class UpdateReceipt:
+    """Normalized receipt for one successful ``block_replace``.
+
+    Attributes:
+        result: Always ``success`` for returned receipts; failures raise.
+        reported_revision_id: Optional revision echoed by the CLI; diagnostic
+            only and never used as the next write baseline.
+        warnings: Safe warning values preserved for apply reporting.
+    """
+
+    result: Literal["success"]
+    reported_revision_id: int | None
+    warnings: tuple[object, ...]
+
+
+@dataclass(frozen=True)
 class SourceSpan:
     """One contiguous mapping from analysis projection to XML source text.
 
@@ -47,6 +79,9 @@ class SourceSpan:
         source_start: Inclusive offset inside the XML text node.
         source_end: Exclusive offset inside the XML text node.
         writable: Whether automatic writeback may target this span.
+        nonwritable_reason: Stable reason when the span is scannable but not
+            writable (for example ``table_cell``); ``None`` when writable or
+            when no specialized reason applies.
     """
 
     projection_start: int
@@ -56,6 +91,7 @@ class SourceSpan:
     source_start: int
     source_end: int
     writable: bool
+    nonwritable_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -209,6 +245,26 @@ class ApprovedSectionPlan:
     patches: tuple[Patch, ...] = ()
 
 
+# Feishu inspect coverage is a protocol constant: it describes what this tool
+# run scanned, never whether findings were empty or "passed".
+FEISHU_INSPECT_COVERAGE: Mapping[str, Any] = MappingProxyType(
+    {
+        "static": MappingProxyType(
+            {
+                "paragraphs": "scanned",
+                "list_items": "scanned",
+                "blockquotes": "scanned",
+                "headings": "structure_only",
+                "table_cells": "scanned",
+                "code": "excluded",
+                "embedded_resources": "excluded",
+            }
+        ),
+        "semantic_review": "not_run",
+    }
+)
+
+
 @dataclass(frozen=True)
 class InspectionReport:
     """Structured read-only inspection result for one Feishu document.
@@ -253,6 +309,10 @@ class InspectionReport:
                 for section in self.sections
             ],
             "findings": [_bound_finding_to_dict(item) for item in self.findings],
+            "coverage": {
+                "static": dict(FEISHU_INSPECT_COVERAGE["static"]),
+                "semantic_review": FEISHU_INSPECT_COVERAGE["semantic_review"],
+            },
         }
 
 

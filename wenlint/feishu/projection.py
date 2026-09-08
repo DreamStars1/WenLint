@@ -12,6 +12,7 @@ from xml.etree.ElementTree import Element
 
 from wenlint.feishu.models import DocumentRef, DocumentSnapshot, Patch, SourceSpan
 from wenlint.feishu.sections import build_sections
+from wenlint.feishu.xml_protocol import XmlProtocolError, block_id_of
 
 _XML_LIMIT = 20 * 1024 * 1024
 _UNSAFE_MARKERS = ("<!DOCTYPE", "<!ENTITY")
@@ -23,7 +24,6 @@ _WRITABLE_NESTED_TAGS = {"p", "li"}
 _EXCLUDED_BLOCK_TAGS = {
     "pre",
     "code",
-    "table",
     "grid",
     "img",
     "source",
@@ -89,6 +89,9 @@ def project_xml(xml: str, ref: DocumentRef, revision_id: int) -> DocumentSnapsho
         if not block_parts:
             continue
         if emitted_block:
+            # Two newlines form a hard Feishu block boundary so adjacent <p>
+            # blocks are not aggregated as one Markdown soft-wrapped paragraph.
+            cursor = _append_synthetic("\n", projection_parts, source_map, cursor)
             cursor = _append_synthetic("\n", projection_parts, source_map, cursor)
         for span in block_map:
             source_map.append(
@@ -100,6 +103,7 @@ def project_xml(xml: str, ref: DocumentRef, revision_id: int) -> DocumentSnapsho
                     source_start=span.source_start,
                     source_end=span.source_end,
                     writable=span.writable,
+                    nonwritable_reason=span.nonwritable_reason,
                 )
             )
         projection_parts.extend(block_parts)
@@ -207,12 +211,13 @@ def find_block(root: Element, block_id: str) -> Element:
     Raises:
         XmlSafetyError: If zero or multiple blocks match.
     """
-    matches = [
-        child
-        for child in root
-        if child.attrib.get("block-id") == block_id
-        or child.attrib.get("block_id") == block_id
-    ]
+    matches = []
+    try:
+        for child in root:
+            if block_id_of(child) == block_id:
+                matches.append(child)
+    except XmlProtocolError as exc:
+        raise XmlSafetyError(str(exc), kind=exc.kind) from exc
     if len(matches) != 1:
         raise XmlSafetyError("block id must be unique", kind="block_not_found")
     return matches[0]
@@ -301,10 +306,19 @@ def _project_block(
         Updated projection cursor.
     """
     tag = local_tag(block.tag)
-    block_id = block.attrib.get("block-id") or block.attrib.get("block_id")
+    try:
+        block_id = block_id_of(block)
+    except XmlProtocolError as exc:
+        raise XmlSafetyError(str(exc), kind=exc.kind) from exc
 
-    if tag in _OMITTED_TAGS or tag in _EXCLUDED_BLOCK_TAGS:
+    if tag in _OMITTED_TAGS:
         return cursor
+
+    if tag in _EXCLUDED_BLOCK_TAGS:
+        return cursor
+
+    if tag == "table":
+        return _project_table(block, block_id, parts, source_map, cursor)
 
     if tag in _HEADING_TAGS:
         level = int(tag[1])
@@ -327,6 +341,83 @@ def _project_block(
         return _project_element(block, block_id, parts, source_map, cursor, True, ())
 
     return _project_element(block, block_id, parts, source_map, cursor, False, ())
+
+
+def _project_table(
+    block: Element,
+    block_id: str | None,
+    parts: list[str],
+    source_map: list[SourceSpan],
+    cursor: int,
+) -> int:
+    """Project a Feishu table as GFM-like pipe rows for cell scanning.
+
+    Row and cell separators are synthetic. Visible cell text keeps SourceMap
+    entries but is never writable (``nonwritable_reason=table_cell``).
+    Nested wrappers such as ``thead`` / ``tbody`` / ``tfoot`` are walked while
+    preserving the exact child-index ``node_path`` from the table root.
+
+    Args:
+        block: Top-level ``table`` element.
+        block_id: Table block id when present.
+        parts: Projection fragments.
+        source_map: SourceMap accumulator.
+        cursor: Current projection offset.
+
+    Returns:
+        Updated projection cursor.
+    """
+    row_tags = {"tr", "table_row"}
+    cell_tags = {"td", "th", "table_cell", "cell"}
+    section_tags = {"thead", "tbody", "tfoot"}
+
+    def collect_rows(
+        element: Element, path_prefix: tuple[int, ...]
+    ) -> list[tuple[tuple[int, ...], list[tuple[tuple[int, ...], Element]]]]:
+        rows: list[tuple[tuple[int, ...], list[tuple[tuple[int, ...], Element]]]] = []
+        flat_cells: list[tuple[tuple[int, ...], Element]] = []
+        for index, child in enumerate(element):
+            tag = local_tag(child.tag)
+            child_path = path_prefix + (index,)
+            if tag in row_tags:
+                cells = [
+                    (child_path + (c_index,), nested)
+                    for c_index, nested in enumerate(child)
+                    if local_tag(nested.tag) in cell_tags
+                ]
+                rows.append((child_path, cells))
+            elif tag in section_tags:
+                rows.extend(collect_rows(child, child_path))
+            elif tag in cell_tags and path_prefix == ():
+                # Flat table with direct cell children → one synthetic row.
+                flat_cells.append((child_path, child))
+        if flat_cells:
+            rows.append(((), flat_cells))
+        return rows
+
+    row_entries = collect_rows(block, ())
+    emitted_row = False
+    for _row_path, cells in row_entries:
+        if not cells:
+            continue
+        if emitted_row:
+            cursor = _append_synthetic("\n", parts, source_map, cursor)
+        cursor = _append_synthetic("|", parts, source_map, cursor)
+        for cell_path, cell in cells:
+            cursor = _append_synthetic(" ", parts, source_map, cursor)
+            cursor = _project_element(
+                cell,
+                block_id,
+                parts,
+                source_map,
+                cursor,
+                False,
+                cell_path,
+                nonwritable_reason="table_cell",
+            )
+            cursor = _append_synthetic(" |", parts, source_map, cursor)
+        emitted_row = True
+    return cursor
 
 
 def _project_list(
@@ -398,6 +489,7 @@ def _project_element(
     cursor: int,
     writable: bool,
     path: tuple[int, ...],
+    nonwritable_reason: str | None = None,
 ) -> int:
     """Project an element's text, inline children, and tails.
 
@@ -409,10 +501,12 @@ def _project_element(
         cursor: Current projection offset.
         writable: Whether the owning context allows writeback.
         path: Path from the block root to ``element``.
+        nonwritable_reason: Stable reason when text is scannable but not writable.
 
     Returns:
         Updated projection cursor.
     """
+    reason = None if writable else nonwritable_reason
     # Root text uses ``()`` so it never collides with child index ``0``.
     if element.text:
         # Link URLs never appear as element.text of <a>; href stays in attrib.
@@ -425,6 +519,7 @@ def _project_element(
             source_map,
             cursor,
             writable,
+            nonwritable_reason=reason,
         )
 
     for index, child in enumerate(element):
@@ -447,6 +542,7 @@ def _project_element(
                     source_map,
                     cursor,
                     writable,
+                    nonwritable_reason=reason,
                 )
             for nested_index, nested in enumerate(child):
                 cursor = _project_element(
@@ -457,6 +553,7 @@ def _project_element(
                     cursor,
                     writable,
                     child_path + (nested_index,),
+                    nonwritable_reason=nonwritable_reason,
                 )
                 if nested.tail:
                     cursor = _append_text(
@@ -468,6 +565,7 @@ def _project_element(
                         source_map,
                         cursor,
                         writable,
+                        nonwritable_reason=reason,
                     )
         elif child_tag in _INLINE_TAGS:
             cursor = _project_element(
@@ -478,6 +576,7 @@ def _project_element(
                 cursor,
                 writable,
                 child_path,
+                nonwritable_reason=nonwritable_reason,
             )
         elif child_tag in _WRITABLE_NESTED_TAGS and writable:
             cursor = _project_element(
@@ -510,6 +609,7 @@ def _project_element(
                 cursor,
                 False,
                 child_path,
+                nonwritable_reason=nonwritable_reason,
             )
         if child.tail:
             cursor = _append_text(
@@ -521,6 +621,7 @@ def _project_element(
                 source_map,
                 cursor,
                 writable,
+                nonwritable_reason=reason,
             )
     return cursor
 
@@ -534,6 +635,7 @@ def _append_text(
     source_map: list[SourceSpan],
     cursor: int,
     writable: bool,
+    nonwritable_reason: str | None = None,
 ) -> int:
     """Append real XML text characters with one SourceSpan per run.
 
@@ -546,6 +648,7 @@ def _append_text(
         source_map: SourceMap accumulator.
         cursor: Current projection offset.
         writable: Whether automatic writeback may target these characters.
+        nonwritable_reason: Stable reason when ``writable`` is false.
 
     Returns:
         Updated projection cursor.
@@ -554,6 +657,7 @@ def _append_text(
         return cursor
     end = cursor + len(text)
     parts.append(text)
+    is_writable = bool(writable and block_id is not None)
     source_map.append(
         SourceSpan(
             projection_start=cursor,
@@ -562,11 +666,11 @@ def _append_text(
             node_path=node_path,
             source_start=source_start,
             source_end=source_start + len(text),
-            writable=bool(writable and block_id is not None),
+            writable=is_writable,
+            nonwritable_reason=None if is_writable else nonwritable_reason,
         )
     )
     return end
-
 
 def _append_synthetic(
     text: str,

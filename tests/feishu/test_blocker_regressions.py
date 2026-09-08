@@ -7,7 +7,7 @@ import pytest
 
 from wenlint.feishu.document import parse_document_ref
 from wenlint.feishu.findings import bind_findings
-from wenlint.feishu.models import ApprovedSectionPlan, InspectionReport, Patch
+from wenlint.feishu.models import ApprovedSectionPlan, FetchedDocument, InspectionReport, Patch, UpdateReceipt
 from wenlint.feishu.patches import (
     PatchValidationError,
     apply_approved_section,
@@ -215,17 +215,11 @@ def test_post_write_fetch_failure_is_partial_failure(monkeypatch):
                 from wenlint.feishu.lark import LarkCliError
 
                 raise LarkCliError("network", "post-write fetch failed", retryable=True)
-            return {
-                "ok": True,
-                "data": {
-                    "document": {
-                        "document_id": "DocToken",
-                        "revision_id": self.revision,
-                        "url": REF.canonical_url,
-                    },
-                    "content": self.xml,
-                },
-            }
+            return FetchedDocument(
+                ref=REF,
+                revision_id=self.revision,
+                xml=self.xml,
+            )
 
         def replace_block(self, ref, block_id, block_xml, revision_id):
             self.xml = self.xml.replace(
@@ -234,7 +228,11 @@ def test_post_write_fetch_failure_is_partial_failure(monkeypatch):
                 1,
             )
             self.revision += 1
-            return {"ok": True, "data": {"result": "success", "warnings": ["note"]}}
+            return UpdateReceipt(
+                result="success",
+                reported_revision_id=self.revision,
+                warnings=("note",),
+            )
 
     import wenlint.feishu.patches as patches_mod
 

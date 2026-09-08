@@ -3,6 +3,9 @@
 All invocations use argv arrays with ``shell=False``. Document URLs, tokens,
 and XML travel as single argv values so hostile characters cannot become shell
 syntax. stdout/stderr are capped and never attached wholesale to exceptions.
+
+Callers receive normalized ``FetchedDocument`` / ``UpdateReceipt`` values and
+never inspect raw CLI JSON schemas or dialect flags.
 """
 
 from __future__ import annotations
@@ -15,17 +18,18 @@ import sys
 import threading
 import time
 from collections.abc import Mapping, Sequence
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Protocol
+from urllib.parse import urlsplit
 
-from wenlint.feishu.models import DocumentRef
+from wenlint.feishu.document import DocumentRefError, resolve_fetched_docx_ref
+from wenlint.feishu.models import DocumentRef, FetchedDocument, UpdateReceipt
 
 _STDOUT_LIMIT = 20 * 1024 * 1024
 _STDERR_LIMIT = 1 * 1024 * 1024
 _TERMINATE_GRACE_SECONDS = 1.0
 
 _PROBE_FETCH_NEEDLES = (
-    "docs",
-    "+fetch",
     "--doc",
     "--doc-format",
     "xml",
@@ -33,12 +37,8 @@ _PROBE_FETCH_NEEDLES = (
     "full",
     "--as",
     "user",
-    "--format",
-    "json",
 )
 _PROBE_UPDATE_NEEDLES = (
-    "docs",
-    "+update",
     "block_replace",
     "--block-id",
     "--content",
@@ -47,9 +47,36 @@ _PROBE_UPDATE_NEEDLES = (
     "--revision-id",
     "--as",
     "user",
-    "--format",
-    "json",
 )
+
+_MISSING_EXECUTABLE_HINT = (
+    "Ensure the Node version containing lark-cli is active, "
+    "or set WENLINT_LARK_CLI to its executable path."
+)
+
+
+class DocumentGateway(Protocol):
+    """Minimal document I/O seam used by inspect and apply."""
+
+    def fetch(self, ref: DocumentRef) -> FetchedDocument:
+        """Fetch and normalize one document snapshot."""
+
+    def replace_block(
+        self,
+        ref: DocumentRef,
+        block_id: str,
+        xml: str,
+        revision_id: int,
+    ) -> UpdateReceipt:
+        """Replace one block under an explicit revision."""
+
+
+@dataclass(frozen=True)
+class _CliCapabilities:
+    """Cached ``lark-cli`` dialect capabilities for argv construction."""
+
+    version: str
+    json_args: tuple[str, ...]
 
 
 class LarkCliError(Exception):
@@ -121,9 +148,10 @@ class LarkClient:
                 self._argv_prefix = [override]
         self.fetch_timeout = fetch_timeout
         self.update_timeout = update_timeout
+        self._capabilities: _CliCapabilities | None = None
 
     def probe(self) -> str:
-        """Verify required CLI capabilities and return version text.
+        """Verify required CLI capabilities and cache dialect settings.
 
         Returns:
             Version string from ``lark-cli --version``.
@@ -132,45 +160,21 @@ class LarkClient:
             LarkCliError: If the executable is missing or required flags or
                 commands are absent from help output.
         """
-        version = self._run(["--version"], timeout=10.0, expect_json=False)
-        fetch_help = self._run(
-            ["docs", "+fetch", "--help"],
-            timeout=10.0,
-            expect_json=False,
-        )
-        update_help = self._run(
-            ["docs", "+update", "--help"],
-            timeout=10.0,
-            expect_json=False,
-        )
-        missing: list[str] = []
-        for needle in _PROBE_FETCH_NEEDLES:
-            if needle not in fetch_help:
-                missing.append(f"fetch:{needle}")
-        for needle in _PROBE_UPDATE_NEEDLES:
-            if needle not in update_help:
-                missing.append(f"update:{needle}")
-        if missing:
-            raise LarkCliError(
-                "incompatible_cli",
-                "lark-cli is missing required Feishu document capabilities",
-                retryable=False,
-                details={"missing_capabilities": missing, "version": version.strip()},
-            )
-        return version.strip()
+        return self._ensure_capabilities().version
 
-    def fetch(self, ref: DocumentRef) -> Mapping[str, object]:
-        """Fetch a Docx/Wiki document as XML ``full`` JSON using user identity.
+    def fetch(self, ref: DocumentRef) -> FetchedDocument:
+        """Fetch a Docx/Wiki document as normalized XML with revision metadata.
 
         Args:
             ref: Document reference; may still be unresolved for Wiki inputs.
 
         Returns:
-            Parsed JSON object with top-level ``ok is True``.
+            Normalized ``FetchedDocument`` with resolved Docx identity.
 
         Raises:
             LarkCliError: On process, protocol, auth, or schema failures.
         """
+        caps = self._ensure_capabilities()
         payload = self._run(
             [
                 "docs",
@@ -183,35 +187,13 @@ class LarkClient:
                 "full",
                 "--as",
                 "user",
-                "--format",
-                "json",
+                *caps.json_args,
             ],
             timeout=self.fetch_timeout,
             expect_json=True,
         )
         assert isinstance(payload, dict)
-        self._require_ok(payload)
-        data = payload.get("data")
-        if not isinstance(data, Mapping):
-            raise LarkCliError(
-                "invalid_response",
-                "fetch response is missing data object",
-                retryable=False,
-            )
-        document = data.get("document")
-        if not isinstance(document, Mapping):
-            raise LarkCliError(
-                "invalid_response",
-                "fetch response is missing document metadata",
-                retryable=False,
-            )
-        if "revision_id" not in document:
-            raise LarkCliError(
-                "missing_revision",
-                "fetch response is missing document revision_id",
-                retryable=False,
-            )
-        return payload
+        return _normalize_fetch_payload(payload, ref)
 
     def replace_block(
         self,
@@ -219,7 +201,7 @@ class LarkClient:
         block_id: str,
         xml: str,
         revision_id: int,
-    ) -> Mapping[str, object]:
+    ) -> UpdateReceipt:
         """Replace one block with complete XML under an explicit revision.
 
         Args:
@@ -230,7 +212,8 @@ class LarkClient:
                 rejected before spawning.
 
         Returns:
-            Parsed JSON object whose update ``result`` is ``success``.
+            Normalized ``UpdateReceipt`` whose ``reported_revision_id`` is
+            diagnostic only.
 
         Raises:
             LarkCliError: On unresolved refs, forbidden modes, or update
@@ -248,6 +231,7 @@ class LarkClient:
                 "explicit positive revision_id is required; revision_id<=0 is forbidden",
                 retryable=False,
             )
+        caps = self._ensure_capabilities()
         doc = ref.canonical_url
         payload = self._run(
             [
@@ -267,58 +251,75 @@ class LarkClient:
                 str(revision_id),
                 "--as",
                 "user",
-                "--format",
-                "json",
+                *caps.json_args,
             ],
             timeout=self.update_timeout,
             expect_json=True,
         )
         assert isinstance(payload, dict)
-        self._require_ok(payload)
-        data = payload.get("data")
-        if not isinstance(data, Mapping):
-            raise LarkCliError(
-                "invalid_response",
-                "update response is missing data object",
-                retryable=False,
-            )
-        result = data.get("result")
-        if result != "success":
-            kind = "partial_success" if result == "partial_success" else "update_failed"
-            raise LarkCliError(
-                kind,
-                f"block replace did not succeed (result={result!r})",
-                retryable=False,
-                details={"result": result},
-            )
-        return payload
+        return _normalize_update_payload(payload)
 
-    def _require_ok(self, payload: Mapping[str, object]) -> None:
-        """Fail closed unless top-level ``ok`` is exactly ``True``.
+    def _ensure_capabilities(self) -> _CliCapabilities:
+        """Probe once and cache dialect capabilities for later argv builds.
 
-        Args:
-            payload: Parsed JSON object from ``lark-cli``.
+        Returns:
+            Cached capability snapshot.
 
         Raises:
-            LarkCliError: When ``ok`` is missing or false.
+            LarkCliError: When required help needles are missing or JSON
+                dialects disagree across fetch/update.
         """
-        if payload.get("ok") is True:
-            return
-        error = payload.get("error")
-        kind = "protocol_error"
-        message = "lark-cli returned ok=false"
-        retryable = False
-        details: dict[str, object] = {}
-        if isinstance(error, Mapping):
-            err_type = str(error.get("type") or error.get("code") or "protocol_error")
-            kind = err_type
-            message = _safe_error_message(kind, error.get("message"))
-            if "hint" in error:
-                details["hint"] = error["hint"]
-            if "missing_scopes" in error:
-                details["missing_scopes"] = error["missing_scopes"]
-            retryable = kind in {"network", "timeout"}
-        raise LarkCliError(kind, message, retryable=retryable, details=details)
+        if self._capabilities is not None:
+            return self._capabilities
+        version = self._run(["--version"], timeout=10.0, expect_json=False)
+        assert isinstance(version, str)
+        fetch_help = self._run(
+            ["docs", "+fetch", "--help"],
+            timeout=10.0,
+            expect_json=False,
+        )
+        update_help = self._run(
+            ["docs", "+update", "--help"],
+            timeout=10.0,
+            expect_json=False,
+        )
+        assert isinstance(fetch_help, str)
+        assert isinstance(update_help, str)
+        missing: list[str] = []
+        for needle in _PROBE_FETCH_NEEDLES:
+            if needle not in fetch_help:
+                missing.append(f"fetch:{needle}")
+        for needle in _PROBE_UPDATE_NEEDLES:
+            if needle not in update_help:
+                missing.append(f"update:{needle}")
+        if missing:
+            raise LarkCliError(
+                "incompatible_cli",
+                "lark-cli is missing required Feishu document capabilities",
+                retryable=False,
+                details={"missing_capabilities": missing, "version": version.strip()},
+            )
+        fetch_json = "--format" in fetch_help and "json" in fetch_help
+        update_json = "--format" in update_help and "json" in update_help
+        if fetch_json != update_json:
+            raise LarkCliError(
+                "incompatible_cli",
+                "lark-cli fetch/update JSON dialects disagree",
+                retryable=False,
+                details={
+                    "missing_capabilities": [
+                        f"fetch:format_json={fetch_json}",
+                        f"update:format_json={update_json}",
+                    ],
+                    "version": version.strip(),
+                },
+            )
+        json_args: tuple[str, ...] = ("--format", "json") if fetch_json else ()
+        self._capabilities = _CliCapabilities(
+            version=version.strip(),
+            json_args=json_args,
+        )
+        return self._capabilities
 
     def _run(
         self,
@@ -351,7 +352,10 @@ class LarkClient:
                     "missing_executable",
                     "lark-cli executable was not found",
                     retryable=False,
-                    details={"executable": executable},
+                    details={
+                        "executable": executable,
+                        "hint": _MISSING_EXECUTABLE_HINT,
+                    },
                 )
 
         try:
@@ -368,7 +372,10 @@ class LarkClient:
                 "missing_executable",
                 "lark-cli executable was not found",
                 retryable=False,
-                details={"executable": executable},
+                details={
+                    "executable": executable,
+                    "hint": _MISSING_EXECUTABLE_HINT,
+                },
             ) from exc
 
         stdout_buf = bytearray()
@@ -459,7 +466,7 @@ class LarkClient:
                     if parsed_error is not None and _is_ok_false_error_object(
                         parsed_error
                     ):
-                        self._require_ok(parsed_error)
+                        _require_ok(parsed_error)
             raise LarkCliError(
                 "nonzero_exit",
                 "lark-cli exited with a nonzero status",
@@ -485,6 +492,187 @@ class LarkClient:
                 retryable=False,
             )
         return parsed
+
+
+def _normalize_fetch_payload(
+    payload: Mapping[str, object],
+    ref: DocumentRef,
+) -> FetchedDocument:
+    """Normalize legacy/modern fetch JSON into ``FetchedDocument``.
+
+    Args:
+        payload: Parsed CLI JSON object.
+        ref: Input document reference used for trusted host reconstruction.
+
+    Returns:
+        Normalized fetched document.
+
+    Raises:
+        LarkCliError: On schema, ambiguity, or resolution failures.
+    """
+    _require_ok(payload)
+    data = payload.get("data")
+    if not isinstance(data, Mapping):
+        raise LarkCliError(
+            "invalid_response",
+            "fetch response is missing data object",
+            retryable=False,
+        )
+    document = data.get("document")
+    if not isinstance(document, Mapping):
+        raise LarkCliError(
+            "invalid_response",
+            "fetch response is missing document metadata",
+            retryable=False,
+        )
+
+    nested = document.get("content")
+    legacy = data.get("content")
+    nested_ok = isinstance(nested, str) and bool(nested)
+    legacy_ok = isinstance(legacy, str) and bool(legacy)
+    if nested_ok and legacy_ok and nested != legacy:
+        raise LarkCliError(
+            "ambiguous_content",
+            "fetch response contains conflicting XML content paths",
+            retryable=False,
+        )
+    if nested_ok:
+        content = nested
+    elif legacy_ok:
+        content = legacy
+    else:
+        raise LarkCliError(
+            "invalid_response",
+            "fetch response is missing XML content",
+            retryable=False,
+        )
+    assert isinstance(content, str)
+
+    document_id = document.get("document_id")
+    if not isinstance(document_id, str) or not document_id:
+        raise LarkCliError(
+            "unresolved_document",
+            "fetch response did not resolve a Docx document id",
+            retryable=False,
+        )
+
+    raw_revision = document.get("revision_id")
+    if "revision_id" not in document:
+        raise LarkCliError(
+            "missing_revision",
+            "fetch response is missing document revision_id",
+            retryable=False,
+        )
+    if isinstance(raw_revision, bool) or not isinstance(raw_revision, int) or raw_revision <= 0:
+        raise LarkCliError(
+            "invalid_response",
+            "fetch response revision_id must be a positive integer",
+            retryable=False,
+        )
+
+    raw_url = document.get("url")
+    if isinstance(raw_url, str) and raw_url:
+        candidate_url = raw_url
+    else:
+        host = urlsplit(ref.input_url).hostname
+        if not host:
+            raise LarkCliError(
+                "unresolved_document",
+                "fetch response did not resolve a Docx canonical URL",
+                retryable=False,
+            )
+        candidate_url = f"https://{host}/docx/{document_id}"
+
+    try:
+        resolved = resolve_fetched_docx_ref(ref, document_id, candidate_url)
+    except DocumentRefError as exc:
+        raise LarkCliError(
+            getattr(exc, "kind", "unresolved_document"),
+            str(exc),
+            retryable=False,
+        ) from exc
+
+    return FetchedDocument(ref=resolved, revision_id=raw_revision, xml=content)
+
+
+def _normalize_update_payload(payload: Mapping[str, object]) -> UpdateReceipt:
+    """Normalize update JSON into ``UpdateReceipt``.
+
+    Args:
+        payload: Parsed CLI JSON object.
+
+    Returns:
+        Normalized success receipt.
+
+    Raises:
+        LarkCliError: When ``ok`` is false or ``result`` is not ``success``.
+    """
+    _require_ok(payload)
+    data = payload.get("data")
+    if not isinstance(data, Mapping):
+        raise LarkCliError(
+            "invalid_response",
+            "update response is missing data object",
+            retryable=False,
+        )
+    result = data.get("result")
+    if result != "success":
+        kind = "partial_success" if result == "partial_success" else "update_failed"
+        raise LarkCliError(
+            kind,
+            f"block replace did not succeed (result={result!r})",
+            retryable=False,
+            details={"result": result},
+        )
+
+    warnings: list[object] = []
+    top_warnings = payload.get("warnings")
+    if isinstance(top_warnings, list):
+        warnings.extend(top_warnings)
+    raw_warnings = data.get("warnings")
+    if isinstance(raw_warnings, list):
+        warnings.extend(raw_warnings)
+
+    reported = data.get("revision_id")
+    reported_revision: int | None
+    if isinstance(reported, bool) or not isinstance(reported, int):
+        reported_revision = None
+    else:
+        reported_revision = reported
+
+    return UpdateReceipt(
+        result="success",
+        reported_revision_id=reported_revision,
+        warnings=tuple(warnings),
+    )
+
+
+def _require_ok(payload: Mapping[str, object]) -> None:
+    """Fail closed unless top-level ``ok`` is exactly ``True``.
+
+    Args:
+        payload: Parsed JSON object from ``lark-cli``.
+
+    Raises:
+        LarkCliError: When ``ok`` is missing or false.
+    """
+    if payload.get("ok") is True:
+        return
+    error = payload.get("error")
+    kind = "protocol_error"
+    message = "lark-cli returned ok=false"
+    retryable = False
+    details: dict[str, object] = {}
+    if isinstance(error, Mapping):
+        err_type = str(error.get("type") or error.get("code") or "protocol_error")
+        kind = err_type
+        message = _safe_error_message(kind, error.get("message"))
+        if "hint" in error:
+            details["hint"] = error["hint"]
+        if "missing_scopes" in error:
+            details["missing_scopes"] = error["missing_scopes"]
+        retryable = kind in {"network", "timeout"}
+    raise LarkCliError(kind, message, retryable=retryable, details=details)
 
 
 def _terminate(proc: subprocess.Popen[bytes]) -> None:
@@ -586,6 +774,7 @@ def _sanitized_env() -> dict[str, str]:
         "FAKE_LARK_SLEEP",
         "FAKE_LARK_STATE",
         "FAKE_LARK_LEAK",
+        "FAKE_LARK_DIALECT",
         "WENLINT_LARK_CLI",
     }
     env = {key: value for key, value in os.environ.items() if key in allowed}

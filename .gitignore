@@ -10,6 +10,7 @@ __pycache__/
 
 
 *.egg-info/
+build/
 dist-test/
 .venv-dist-test/
 .pytest-*/

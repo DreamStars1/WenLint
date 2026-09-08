@@ -253,7 +253,7 @@ class ApprovedSectionPlan:
 
 ### 9.2 读取
 
-适配器执行等价的 argv：
+适配器按能力探测结果构建 argv（由 adapter 选择是否附加 `--format json`）：
 
 ```text
 lark-cli docs +fetch
@@ -261,8 +261,10 @@ lark-cli docs +fetch
   --doc-format xml
   --detail full
   --as user
-  --format json
+  [--format json]   # 仅当帮助显示支持时由 adapter 附加
 ```
+
+调用方只消费归一化后的 `FetchedDocument`，不解析原始 `payload["data"]`。
 
 不单独执行 `auth status --verify` 作为预检。首次实际 fetch 同时完成鉴权和 scope 检查。若返回认证或权限错误，再给出对应恢复指引。这样检查的是当前操作真正需要的权限。
 
@@ -279,8 +281,10 @@ lark-cli docs +update
   --doc-format xml
   --revision-id <latest-revision>
   --as user
-  --format json
+  [--format json]   # 仅当帮助显示支持时由 adapter 附加
 ```
+
+update 回执中的 revision 仅作诊断；下一步 revision / block id / fingerprint 必须以写后重新 fetch 为准。
 
 不使用 `str_replace`。它执行全文字符串匹配，遇到重复文本会产生误改风险。不使用 `overwrite`，因为它会引入丢失评论和暂不支持资源的风险。
 

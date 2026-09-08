@@ -12,11 +12,13 @@ import hashlib
 from xml.etree.ElementTree import Element
 
 from wenlint.feishu.models import DocumentSnapshot, Section
+from wenlint.feishu.xml_protocol import block_id_of
 
 _HEADING_TAGS = {f"h{i}" for i in range(1, 10)}
-# Only drop identifiers that Feishu routinely rewrites without semantic change.
-# Generic resource tokens such as cite ``id`` remain in the fingerprint.
+# Drop Feishu identity dialects and revision markers. Changing only id dialect
+# or id values must not invalidate an otherwise unchanged chapter fingerprint.
 _VOLATILE_ATTRS = {
+    "id",
     "block-id",
     "block_id",
     "revision-id",
@@ -58,15 +60,12 @@ def build_sections(root: Element) -> tuple[Section, ...]:
         tag = _local(block.tag)
         if tag in _HEADING_TAGS:
             level = int(tag[1])
-            block_id = block.attrib.get("block-id") or block.attrib.get("block_id") or ""
+            block_id = _block_id_or_empty(block)
             title = "".join(block.itertext())
             headings.append((index, level, title, block_id))
 
     if not headings:
-        block_ids = tuple(
-            (block.attrib.get("block-id") or block.attrib.get("block_id") or "")
-            for block in blocks
-        )
+        block_ids = tuple(_block_id_or_empty(block) for block in blocks)
         fingerprint = _fingerprint_elements(blocks)
         return (
             Section(
@@ -88,10 +87,7 @@ def build_sections(root: Element) -> tuple[Section, ...]:
                 locator=LEAD_IN_LOCATOR,
                 title=LEAD_IN_TITLE,
                 level=0,
-                block_ids=tuple(
-                    (b.attrib.get("block-id") or b.attrib.get("block_id") or "")
-                    for b in lead_blocks
-                ),
+                block_ids=tuple(_block_id_or_empty(b) for b in lead_blocks),
                 fingerprint=_fingerprint_elements(lead_blocks),
             )
         )
@@ -122,15 +118,28 @@ def build_sections(root: Element) -> tuple[Section, ...]:
                 locator=locator,
                 title=title,
                 level=level,
-                block_ids=tuple(
-                    (b.attrib.get("block-id") or b.attrib.get("block_id") or "")
-                    for b in section_blocks
-                ),
+                block_ids=tuple(_block_id_or_empty(b) for b in section_blocks),
                 fingerprint=_fingerprint_elements(section_blocks),
             )
         )
 
     return tuple(sections)
+
+
+def _block_id_or_empty(element: Element) -> str:
+    """Return a block id string, using ``\"\"`` when absent.
+
+    Args:
+        element: Block element.
+
+    Returns:
+        Non-empty block id or an empty string placeholder for section lists.
+
+    Raises:
+        XmlProtocolError: When id attributes conflict.
+    """
+    value = block_id_of(element)
+    return value or ""
 
 
 def locate_section(snapshot: DocumentSnapshot, locator: str) -> Section:
@@ -225,7 +234,7 @@ def _canonical_xml(element: Element) -> str:
     escaped so literal ``&lt;b&gt;x&lt;/b&gt;`` cannot collide with a real
     ``<b>`` child. Child boundaries use explicit markers so text/tail splits
     remain distinct. Only documented volatile block/revision ids are omitted;
-    semantic resource attrs such as ``id`` are preserved.
+    changing id dialect or id values alone does not change the fingerprint.
 
     Args:
         element: Element to canonicalize.

@@ -49,7 +49,9 @@ def _client(fake_lark, **kwargs) -> LarkClient:
 def test_fetch_uses_full_xml_user_identity(fake_lark):
     client = _client(fake_lark)
     response = client.fetch(parse_document_ref(DOC_URL))
-    assert response["ok"] is True
+    assert response.ref.document_id == "DocToken"
+    assert response.revision_id == 12
+    assert "blkParagraph" in response.xml
     assert fake_lark.last_argv == [
         "docs",
         "+fetch",
@@ -140,6 +142,49 @@ def test_missing_executable_is_not_retryable(tmp_path):
         client.probe()
     assert exc.value.kind == "missing_executable"
     assert exc.value.retryable is False
+    assert "WENLINT_LARK_CLI" in str(exc.value.details.get("hint", ""))
+    assert "Node version" in str(exc.value.details.get("hint", ""))
+
+
+def test_modern_dialect_omits_format_json_and_normalizes_nested_content(
+    fake_lark, monkeypatch
+):
+    monkeypatch.setenv("FAKE_LARK_DIALECT", "modern")
+    client = _client(fake_lark)
+    version = client.probe()
+    assert "fake" in version.lower() or "lark-cli" in version.lower()
+    fetched = client.fetch(parse_document_ref(DOC_URL))
+    assert "--format" not in fake_lark.last_argv
+    assert fetched.ref.document_id == "DocToken"
+    assert fetched.ref.canonical_url == DOC_URL
+    assert 'id="blkParagraph"' in fetched.xml
+    receipt = client.replace_block(RESOLVED_REF, "blk1", "<p>新文本</p>", 9)
+    assert "--format" not in fake_lark.last_argv
+    assert receipt.result == "success"
+
+
+def test_ambiguous_content_paths_fail_closed(fake_lark, monkeypatch):
+    monkeypatch.setenv("FAKE_LARK_MODE", "ambiguous_content")
+    client = _client(fake_lark)
+    with pytest.raises(LarkCliError) as exc:
+        client.fetch(parse_document_ref(DOC_URL))
+    assert exc.value.kind == "ambiguous_content"
+
+
+def test_update_missing_warnings_normalize_to_empty(fake_lark, monkeypatch):
+    monkeypatch.setenv("FAKE_LARK_MODE", "update_no_warnings")
+    client = _client(fake_lark)
+    receipt = client.replace_block(RESOLVED_REF, "blk1", "<p>x</p>", 9)
+    assert receipt.warnings == ()
+    assert receipt.reported_revision_id == 9
+
+
+def test_update_stale_reported_revision_is_diagnostic_only(fake_lark, monkeypatch):
+    monkeypatch.setenv("FAKE_LARK_MODE", "update_stale_revision")
+    client = _client(fake_lark)
+    receipt = client.replace_block(RESOLVED_REF, "blk1", "<p>x</p>", 9)
+    assert receipt.reported_revision_id == 1
+    assert receipt.result == "success"
 
 
 def test_timeout_is_retryable(fake_lark, monkeypatch):

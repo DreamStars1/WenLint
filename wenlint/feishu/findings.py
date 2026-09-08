@@ -105,7 +105,7 @@ def _projection_range(
     start = line_starts[line - 1] + (column - 1)
     if start < 0 or start > len(projection):
         return None, None, "unmapped"
-    # S001 and similar may report empty matches; those stay report-only.
+    # Empty matches stay report-only (non-S001 edge cases).
     if match == "":
         return start, start, "empty_match"
     end = start + len(match)
@@ -190,19 +190,6 @@ def _bind_range(
             _section_for_spans(snapshot, spans),
         )
 
-    if any(not span.writable for span in spans):
-        return (
-            FindingLocation(
-                block_id=next(iter(block_ids)),
-                block_url=_block_url(snapshot, next(iter(block_ids))),
-                node_path=next(iter(node_paths)),
-                mapping_status="unsupported_block",
-                writable=False,
-                reason="unsupported_block",
-            ),
-            _section_for_spans(snapshot, spans),
-        )
-
     # Require contiguous coverage with no gaps between contributing spans.
     ordered = sorted(spans, key=lambda span: span.projection_start)
     covered = ordered[0].projection_start
@@ -258,6 +245,36 @@ def _bind_range(
                 mapping_status="source_mismatch",
                 writable=False,
                 reason="source_mismatch",
+                source_start=source_start,
+                source_end=source_end,
+            ),
+            _section_for_spans(snapshot, spans),
+        )
+
+    if any(not span.writable for span in spans):
+        reasons = {span.nonwritable_reason for span in spans}
+        if reasons == {"table_cell"}:
+            return (
+                FindingLocation(
+                    block_id=block_id,
+                    block_url=_block_url(snapshot, block_id),
+                    node_path=node_path,
+                    mapping_status="exact",
+                    writable=False,
+                    reason="table_cell",
+                    source_start=source_start,
+                    source_end=source_end,
+                ),
+                _section_for_spans(snapshot, spans),
+            )
+        return (
+            FindingLocation(
+                block_id=block_id,
+                block_url=_block_url(snapshot, block_id),
+                node_path=node_path,
+                mapping_status="unsupported_block",
+                writable=False,
+                reason="unsupported_block",
                 source_start=source_start,
                 source_end=source_end,
             ),

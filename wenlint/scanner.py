@@ -5,7 +5,14 @@
 
 import re
 
-from .markdown import line_role, mask_text
+from .markdown import (
+    classify_lines,
+    is_table_delimiter_row,
+    iter_table_cells,
+    mask_text,
+    parse_atx_heading,
+    parse_heading_number,
+)
 from .profiles import PROFILES
 from .rules import RULES, by_id
 
@@ -68,8 +75,8 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
     Notes:
         - 无文件级语言守卫：英文文件的中文片段照常检查（行级 S001 守卫已够）。
         - semantic 规则（C002/H002/H003）命中降级为 candidate，不阻断 CI。
-        - S001 聚合连续散文段落判句长；词规则只在正文行执行
-          （跳过 heading/table/fence——结构行不是散文）。
+        - S001 聚合连续散文段落判句长；词规则在正文行与表格单元格执行
+          （heading/fence 仍跳过词法；标题另走结构规则）。
     """
     # A900 文件级规则：SKILL.md 主文件过大（God File 坏味）
     if filename.endswith("SKILL.md"):
@@ -95,13 +102,17 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
     findings = []
     masked = mask_text(text).split("\n")
     raw_lines = text.split("\n")
+    roles = classify_lines(raw_lines)
 
-    # 正文行角色：词规则只在这些行执行（heading/table/fence 是结构非散文）
+    # 正文行角色：词规则只在这些行执行（heading/fence 是结构非散文）
     PROSE_ROLES = ("paragraph", "list_item", "blockquote")
+    STRUCTURE_RULES = {"DOC001", "DOC002"}
+
+    findings.extend(_scan_heading_structure(raw_lines, masked, disabled, sev_ov))
 
     for rule in RULES:
         rid = rule["id"]
-        if rid in disabled:
+        if rid in disabled or rid in STRUCTURE_RULES:
             continue
         needs_semantic = rule.get("semantic", False)
         severity = sev_ov.get(rid, rule["severity"])
@@ -112,31 +123,42 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
         if rid == "S001":   # 超长句：聚合连续散文段落后按句读判长
             # （vale scope 借鉴；剥 ** 等标记；跨行精确定位，不吞同段多命中）
             max_len = params.get("S001", {}).get("max_len", rule.get("max_len", 80))
-            for _, para, raw_para, bounds in _collect_paragraphs(masked, raw_lines):
+            for _, para, raw_para, bounds in _collect_paragraphs(
+                    masked, raw_lines, roles):
                 cursor = 0
                 for seg in re.split(r"(?<=[。！？!?；;])", para):
-                    lead = len(seg) - len(seg.lstrip())   # 句前空白
                     seg_stripped = seg.strip()
                     # 剥 Markdown 标记；空白（含 mask 占位与软换行）不计句长
                     clean = re.sub(r"\*\*|__|\*|_|`", "", seg_stripped)
                     measurable = re.sub(r"\s+", "", clean)
                     if len(measurable) > max_len and _cn_ratio(measurable) >= 0.30:
-                        ln, col = _locate(bounds, cursor + lead)
-                        raw_seg = raw_para[cursor:cursor + len(seg)]
+                        # Exact span in the original aggregated paragraph text.
+                        raw_start = cursor
+                        raw_end = cursor + len(seg)
+                        while raw_start < raw_end and raw_para[raw_start].isspace():
+                            raw_start += 1
+                        while raw_end > raw_start and raw_para[raw_end - 1].isspace():
+                            raw_end -= 1
+                        exact = raw_para[raw_start:raw_end]
+                        ln, col = _locate(bounds, raw_start)
                         findings.append({
                             "line": ln, "col": col, "rule_id": rid,
                             "severity": severity, "category": rule["category"],
-                            "match": "", "message": rule["message"].format(
+                            "match": exact, "message": rule["message"].format(
                                 len=len(measurable), max=max_len),
-                            "sentence": raw_seg.strip(),
+                            "sentence": exact,
                         })
                     cursor += len(seg)
+            findings.extend(
+                _scan_table_cells_s001(
+                    raw_lines, masked, roles, rule, severity, max_len)
+            )
             continue
 
         if rid == "D001":   # 相邻重复（中文 2-8 字连续重复）
             dup_re = re.compile(r"([\u4e00-\u9fff]{2,8})\1")
             for ln, (mline, raw) in enumerate(zip(masked, raw_lines), 1):
-                if line_role(raw) not in PROSE_ROLES:
+                if roles[ln - 1] not in PROSE_ROLES:
                     continue
                 for m in dup_re.finditer(mline):
                     findings.append({
@@ -145,11 +167,15 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
                         "match": m.group(1) * 2,
                         "message": rule["message"].format(w=m.group(1)),
                     })
+            findings.extend(
+                _scan_table_cells_d001(
+                    raw_lines, masked, roles, rule, severity, dup_re)
+            )
             continue
 
-        # 通用词/正则规则（只在正文行执行）
+        # 通用词/正则规则（正文行 + 表格单元格）
         for ln, (mline, raw) in enumerate(zip(masked, raw_lines), 1):
-            if line_role(raw) not in PROSE_ROLES:
+            if roles[ln - 1] not in PROSE_ROLES:
                 continue
             for pat in rpats:
                 for m in pat.finditer(mline):
@@ -168,6 +194,10 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
                         "match": matched,
                         "message": rule["message"].format(w=matched, len=0, max=0),
                     })
+        findings.extend(
+            _scan_table_cells_patterns(
+                raw_lines, masked, roles, rule, severity, rpats, rblock)
+        )
 
     findings += findings_900
 
@@ -199,7 +229,7 @@ def scan_text(text, profile=DEFAULT_PROFILE, filename="<text>"):
     return findings
 
 
-def _collect_paragraphs(masked_lines, raw_lines):
+def _collect_paragraphs(masked_lines, raw_lines, roles):
     """聚合连续散文段落行为段落，附带字符偏移 → 原文位置的行界映射。
 
     Markdown 中一个段落可被手动换行拆成多行；若逐行判句长，
@@ -208,7 +238,8 @@ def _collect_paragraphs(masked_lines, raw_lines):
 
     Args:
         masked_lines: mask 后各行。
-        raw_lines: 原文各行（用于 line_role 判定与 sentence 原文）。
+        raw_lines: 原文各行（用于 sentence 原文）。
+        roles: Per-line roles from :func:`classify_lines`.
 
     Returns:
         list[tuple[int, str, str, list]]：
@@ -224,7 +255,7 @@ def _collect_paragraphs(masked_lines, raw_lines):
         # code) is still part of its surrounding paragraph.  Use the raw line
         # to distinguish it from an actual blank line, while the masked text
         # continues to contribute zero measurable characters.
-        if line_role(raw) == "paragraph" and raw.strip():
+        if roles[ln - 1] == "paragraph" and raw.strip():
             if not buf:
                 start_ln = ln
                 buf, raw_buf = mline, raw
@@ -284,3 +315,206 @@ def _extract_sentence(line, col):
             return seg.strip()
         pos += len(seg)
     return line
+
+
+def _scan_heading_structure(raw_lines, masked_lines, disabled, sev_ov):
+    """Emit DOC001/DOC002 findings for ATX / projected headings.
+
+    Candidates are recognized on raw lines, but globally excluded regions
+    (fence bodies, front matter, multi-line HTML comments, indented code)
+    are skipped when the corresponding document-level masked line is fully
+    blank. Title emptiness and numbering still come from the raw heading so
+    inline-code titles are not mistaken for DOC001.
+
+    Args:
+        raw_lines: Original document lines.
+        masked_lines: Equal-length ``mask_text`` lines aligned to ``raw_lines``.
+        disabled: Rule ids disabled by the active profile.
+        sev_ov: Severity overrides from the profile.
+
+    Returns:
+        list[dict]: Structure findings (may use empty ``match``).
+    """
+    findings = []
+    doc001 = by_id("DOC001")
+    doc002 = by_id("DOC002")
+    # Stack of (level, occurrence_id) for open ancestors. occurrence_id is the
+    # 1-based source line so nonnumeric parents stay distinct across siblings.
+    stack = []
+    last_sibling = {}
+
+    for ln, (raw, masked) in enumerate(zip(raw_lines, masked_lines), 1):
+        parsed = parse_atx_heading(raw)
+        if parsed is None:
+            continue
+        # Excluded interiors are equal-length spaces; keep raw parse for title.
+        if _line_fully_masked(masked):
+            continue
+        level, title = parsed
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        parent_key = tuple(stack)
+        if doc001 and "DOC001" not in disabled and not title:
+            sev = sev_ov.get("DOC001", doc001["severity"])
+            findings.append({
+                "line": ln,
+                "col": 1,
+                "rule_id": "DOC001",
+                "severity": sev,
+                "category": doc001["category"],
+                "match": "",
+                "message": doc001["message"],
+                "sentence": raw.strip(),
+            })
+        number = parse_heading_number(title) if title else None
+        if (
+            doc002
+            and "DOC002" not in disabled
+            and number is not None
+        ):
+            parts, label = number
+            key = (parent_key, level)
+            prev = last_sibling.get(key)
+            if prev is not None:
+                prev_parts, prev_label = prev
+                if (
+                    len(prev_parts) == len(parts)
+                    and prev_parts[:-1] == parts[:-1]
+                    and parts[-1] - prev_parts[-1] > 1
+                ):
+                    sev = sev_ov.get("DOC002", doc002["severity"])
+                    # Point at the later heading title start when possible.
+                    col = raw.find(title) + 1 if title in raw else 1
+                    findings.append({
+                        "line": ln,
+                        "col": col,
+                        "rule_id": "DOC002",
+                        "severity": sev,
+                        "category": doc002["category"],
+                        "match": "",
+                        "message": doc002["message"].format(
+                            prev=prev_label, curr=label),
+                        "sentence": raw.strip(),
+                    })
+            last_sibling[key] = (parts, label)
+        elif title and number is None:
+            # Non-numeric titles break sibling numbering continuity so mixed
+            # schemes stay unreported. Empty headings stay out of the chain.
+            last_sibling.pop((parent_key, level), None)
+        stack.append((level, ln))
+    return findings
+
+
+def _line_fully_masked(masked_line):
+    """Return whether a document-level mask blanked the entire source line.
+
+    Fence bodies, front matter, indented code, and multi-line HTML comment
+    interiors become equal-length spaces; those regions must not receive
+    table-cell scanning or heading-structure findings.
+    """
+    return not masked_line.strip()
+
+
+def _iter_table_cells_for_scan(raw_line, masked_line):
+    """Yield ``(col, raw_cell, masked_cell)`` aligned to the document mask.
+
+    Cell boundaries still come from the raw GFM row (so escaped pipes and
+    inline code keep their owning cell). Scan text comes from the equal-length
+    document-level masked line at those exact offsets, so partial HTML comments
+    and other global exclusions stay excluded.
+    """
+    for col, cell in iter_table_cells(raw_line):
+        start = col - 1
+        end = start + len(cell)
+        yield col, cell, masked_line[start:end]
+
+
+def _scan_table_cells_patterns(raw_lines, masked_lines, roles, rule, severity, rpats, rblock):
+    """Run pattern rules independently inside each GFM table cell."""
+    findings = []
+    rid = rule["id"]
+    for ln, (raw, masked) in enumerate(zip(raw_lines, masked_lines), 1):
+        if roles[ln - 1] != "table" or is_table_delimiter_row(raw):
+            continue
+        if _line_fully_masked(masked):
+            continue
+        for col, cell, masked_cell in _iter_table_cells_for_scan(raw, masked):
+            for pat in rpats:
+                for m in pat.finditer(masked_cell):
+                    matched = cell[m.start():m.end()]
+                    if not matched.strip():
+                        continue
+                    abs_col = col + m.start()
+                    if rblock and rblock.match(raw, abs_col - 1):
+                        continue
+                    findings.append({
+                        "line": ln,
+                        "col": abs_col,
+                        "rule_id": rid,
+                        "severity": severity,
+                        "category": rule["category"],
+                        "match": matched,
+                        "message": rule["message"].format(
+                            w=matched, len=0, max=0),
+                    })
+    return findings
+
+
+def _scan_table_cells_d001(raw_lines, masked_lines, roles, rule, severity, dup_re):
+    """Run adjacent-duplicate detection per table cell."""
+    findings = []
+    for ln, (raw, masked) in enumerate(zip(raw_lines, masked_lines), 1):
+        if roles[ln - 1] != "table" or is_table_delimiter_row(raw):
+            continue
+        if _line_fully_masked(masked):
+            continue
+        for col, cell, masked_cell in _iter_table_cells_for_scan(raw, masked):
+            for m in dup_re.finditer(masked_cell):
+                word = cell[m.start():m.start() + len(m.group(1))]
+                findings.append({
+                    "line": ln,
+                    "col": col + m.start(),
+                    "rule_id": "D001",
+                    "severity": severity,
+                    "category": rule["category"],
+                    "match": word * 2,
+                    "message": rule["message"].format(w=word),
+                })
+    return findings
+
+
+def _scan_table_cells_s001(raw_lines, masked_lines, roles, rule, severity, max_len):
+    """Score long sentences per table cell without joining cells."""
+    findings = []
+    for ln, (raw, masked) in enumerate(zip(raw_lines, masked_lines), 1):
+        if roles[ln - 1] != "table" or is_table_delimiter_row(raw):
+            continue
+        if _line_fully_masked(masked):
+            continue
+        for col, cell, masked_cell in _iter_table_cells_for_scan(raw, masked):
+            cursor = 0
+            for seg in re.split(r"(?<=[。！？!?；;])", masked_cell):
+                seg_stripped = seg.strip()
+                clean = re.sub(r"\*\*|__|\*|_|`", "", seg_stripped)
+                measurable = re.sub(r"\s+", "", clean)
+                if len(measurable) > max_len and _cn_ratio(measurable) >= 0.30:
+                    raw_start = cursor
+                    raw_end = cursor + len(seg)
+                    while raw_start < raw_end and cell[raw_start:raw_start + 1].isspace():
+                        raw_start += 1
+                    while raw_end > raw_start and cell[raw_end - 1:raw_end].isspace():
+                        raw_end -= 1
+                    exact = cell[raw_start:raw_end]
+                    findings.append({
+                        "line": ln,
+                        "col": col + raw_start,
+                        "rule_id": "S001",
+                        "severity": severity,
+                        "category": rule["category"],
+                        "match": exact,
+                        "message": rule["message"].format(
+                            len=len(measurable), max=max_len),
+                        "sentence": exact,
+                    })
+                cursor += len(seg)
+    return findings

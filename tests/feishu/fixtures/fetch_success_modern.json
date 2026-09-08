@@ -1,0 +1,10 @@
+{
+  "ok": true,
+  "data": {
+    "document": {
+      "content": "<h1 id=\"blkTitle\">产品设计</h1><p id=\"blkParagraph\">普通正文可能含糊。</p>",
+      "document_id": "DocToken",
+      "revision_id": 12
+    }
+  }
+}

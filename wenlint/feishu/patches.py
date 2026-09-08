@@ -16,16 +16,17 @@ from pathlib import Path
 from typing import Any
 from xml.etree.ElementTree import Element
 
-from wenlint.feishu.document import DocumentRefError, resolve_fetched_docx_ref
+from wenlint.feishu.document import DocumentRefError
 from wenlint.feishu.findings import bind_findings
 from wenlint.feishu.inspection import inspect_document
-from wenlint.feishu.lark import LarkCliError, LarkClient
+from wenlint.feishu.lark import DocumentGateway, LarkCliError
 from wenlint.feishu.models import (
     ApprovedSectionPlan,
     ApplyResult,
     DocumentRef,
     DocumentSnapshot,
     Patch,
+    UpdateReceipt,
 )
 from wenlint.feishu.projection import (
     XmlSafetyError,
@@ -62,6 +63,7 @@ _ALLOWED_PATCH_FIELDS = {
     "rule_id",
     "rationale",
 }
+_NON_WRITABLE_RULES = frozenset({"DOC001", "DOC002"})
 
 
 class ManifestError(ValueError):
@@ -305,6 +307,11 @@ def validate_patches(
                 "patches must change a non-empty before text",
                 kind="noop_patch",
             )
+        if patch.rule_id in _NON_WRITABLE_RULES:
+            raise PatchValidationError(
+                "structure findings cannot enter an approved patch manifest",
+                kind="unsupported_block",
+            )
         if patch.source_end <= patch.source_start:
             raise PatchValidationError(
                 "patch source offsets are invalid",
@@ -478,7 +485,7 @@ def _derive_expected_fingerprints(
 
 
 def apply_approved_section(
-    client: LarkClient,
+    client: DocumentGateway,
     ref: DocumentRef,
     plan: ApprovedSectionPlan,
 ) -> ApplyResult:
@@ -652,20 +659,12 @@ def apply_approved_section(
                 warnings=warnings,
             )
 
-        replace_warnings = []
-        if isinstance(replace_payload, Mapping):
-            top_warnings = replace_payload.get("warnings")
-            if isinstance(top_warnings, list) and top_warnings:
-                replace_warnings.extend(top_warnings)
-            data = replace_payload.get("data")
-            if isinstance(data, Mapping):
-                raw_warnings = data.get("warnings") or []
-                if isinstance(raw_warnings, list) and raw_warnings:
-                    replace_warnings.extend(raw_warnings)
-            if replace_warnings:
-                warnings.extend(replace_warnings)
+        replace_warnings = list(replace_payload.warnings)
+        if replace_warnings:
+            warnings.extend(replace_warnings)
 
         try:
+            # Post-write fetch is the only authoritative revision/block source.
             snapshot = _fetch_snapshot(client, ref)
         except (LarkCliError, XmlSafetyError) as exc:
             applied.extend(p.patch_id for p in block_patches)
@@ -781,64 +780,26 @@ def apply_approved_section(
     )
 
 
-def _fetch_snapshot(client: LarkClient, ref: DocumentRef) -> DocumentSnapshot:
+def _fetch_snapshot(client: DocumentGateway, ref: DocumentRef) -> DocumentSnapshot:
     """Fetch XML full and project a snapshot.
 
     Args:
-        client: Lark adapter.
+        client: Document gateway.
         ref: Document reference.
 
     Returns:
         Fresh ``DocumentSnapshot``.
 
     Raises:
-        LarkCliError: When the fetch payload lacks required fields.
+        LarkCliError: When the fetch fails closed.
         XmlSafetyError: When XML projection fails.
     """
-    payload = client.fetch(ref)
-    data = payload.get("data") if isinstance(payload, Mapping) else None
-    if not isinstance(data, Mapping):
-        raise LarkCliError(
-            "invalid_response",
-            "fetch response is missing data object",
-            retryable=False,
-        )
-    document = data.get("document")
-    if not isinstance(document, Mapping):
-        raise LarkCliError(
-            "invalid_response",
-            "fetch response is missing document metadata",
-            retryable=False,
-        )
-    document_id = document.get("document_id")
-    url = document.get("url")
-    revision_id = document.get("revision_id")
-    content = data.get("content")
-    if not document_id or not url or revision_id is None or not isinstance(content, str):
-        raise LarkCliError(
-            "invalid_response",
-            "fetch response is missing required document fields",
-            retryable=False,
-        )
-    if isinstance(revision_id, bool) or not isinstance(revision_id, int):
-        raise LarkCliError(
-            "invalid_response",
-            "fetch response revision_id must be an integer",
-            retryable=False,
-        )
-    try:
-        resolved = resolve_fetched_docx_ref(ref, str(document_id), str(url))
-    except DocumentRefError as exc:
-        raise LarkCliError(
-            getattr(exc, "kind", "unresolved_document"),
-            str(exc),
-            retryable=False,
-        ) from exc
-    return project_xml(content, resolved, int(revision_id))
+    fetched = client.fetch(ref)
+    return project_xml(fetched.xml, fetched.ref, fetched.revision_id)
 
 
 def _replace_with_optional_retry(
-    client: LarkClient,
+    client: DocumentGateway,
     ref: DocumentRef,
     snapshot: DocumentSnapshot,
     plan: ApprovedSectionPlan,
@@ -846,14 +807,15 @@ def _replace_with_optional_retry(
     block_patches: list[Patch],
     patched_xml: str,
     pre_write_fingerprint: str,
-) -> Mapping[str, object]:
+) -> UpdateReceipt:
     """Replace one block, retrying once on revision conflict if section is unchanged.
 
     On retry, remaps patches structurally onto the latest snapshot and regenerates
-    patched XML so stale block ids are never reused.
+    patched XML so stale block ids are never reused. The receipt revision is
+    diagnostic only; callers must refetch before the next write.
 
     Args:
-        client: Lark adapter.
+        client: Document gateway.
         ref: Document reference.
         snapshot: Snapshot used for the first attempt.
         plan: Approved plan (for locator checks on retry).
@@ -863,7 +825,7 @@ def _replace_with_optional_retry(
         pre_write_fingerprint: Expected section fingerprint before this write.
 
     Returns:
-        Successful replace response mapping.
+        Successful replace receipt.
 
     Raises:
         LarkCliError: When replace fails or a second conflict occurs.

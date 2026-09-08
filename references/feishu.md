@@ -23,6 +23,25 @@ lark-cli auth login
 
 确认 `wenlint-feishu --help` 与 `lark-cli --version` 可用后再继续。
 
+若提示找不到 `lark-cli`，先确认当前 Node/PATH 是否包含安装 CLI 的版本（例如 NVM 用户先切换到对应 Node），或设置：
+
+```bash
+# 示例：显式指定可执行文件（路径按本机实际位置填写）
+export WENLINT_LARK_CLI="$(command -v lark-cli)"
+```
+
+不要自动安装 Node/NVM/CLI，也不要扫描用户目录。
+
+## CLI 方言
+
+`LarkClient` 根据 `docs +fetch/--help` 与 `docs +update/--help` 协商 JSON 参数：
+
+- 帮助同时包含 `--format` 与 `json` 时，argv 附加 `--format json`（legacy）；
+- 否则依赖 CLI 默认 JSON 输出（modern），仍校验 `ok is True` 与严格 JSON；
+- fetch/update 方言不一致时失败关闭。
+
+已离线验证的方言包括 legacy fixture 与 modern fixture（`data.document.content`、无 URL 时由信任 host 重建 canonical URL、XML `id` 属性）。不要把版本号当成唯一兼容条件。
+
 ## 意图分流
 
 - **只读**：用户说检查、评估、审查，或只要「给我修改方案 / 给我 diff」→ 只运行 inspect，**不调用任何飞书更新**命令。
@@ -52,7 +71,13 @@ wenlint-feishu apply <docx-or-wiki-url> --patch-file <path> --json
 | VERIFY | 仅在找到用户允许使用的依据并转为 REWRITE 后可写 |
 | REWRITE | 可以进入候选 patch，仍须章节批准 |
 
-只有 REWRITE（含已获依据的 VERIFY→REWRITE）且 `location.writable=true` 的项才能进入 patch manifest。KEEP、ASK、未明确批准的项一律不写。
+只有 REWRITE（含已获依据的 VERIFY→REWRITE）且 `location.writable=true` 的项才能进入 patch manifest。KEEP、ASK、未明确批准的项一律不写。DOC001、DOC002 与表格单元格 finding（`reason=table_cell`）只报告，禁止进入 patch。
+
+```text
+静态规则未命中 ≠ 全文已经语义审查 ≠ 文档没有问题
+```
+
+飞书 inspect JSON 含顶层 `coverage`；`semantic_review` 在 Python 侧恒为 `not_run`。详细/全文产品语义审查由 Skill 读取全文执行，见根目录 `SKILL.md`。
 
 ## 交互顺序（必须按此执行）
 

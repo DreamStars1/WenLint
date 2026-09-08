@@ -121,6 +121,34 @@ def test_s001_leading_spaces_keep_original_column():
     assert (hits[0]["line"], hits[0]["col"]) == (1, 3)
 
 
+def test_revision_history_terms_are_semantic_candidates():
+    text = "经过讨论，原先的口径已修正，接口改为只返回有效记录。\n"
+    hits = [h for h in scan_text(text) if h["rule_id"] == "M001"]
+    assert hits
+    assert all(h["severity"] == "candidate" for h in hits)
+    assert any(h["match"] == "经过讨论" for h in hits)
+    assert any(h["match"] == "原先" for h in hits)
+    assert any(h["match"] == "修正" for h in hits)
+    assert any(h["match"] == "改为" for h in hits)
+    assert all(h["review_hint"] for h in hits)
+
+
+def test_context_dependent_terms_are_semantic_candidates():
+    text = "系统仍然保留旧值，不再回填；处理时先校验权限，再写入结果。\n"
+    hits = [h for h in scan_text(text) if h["rule_id"] == "M002"]
+    assert hits
+    assert all(h["severity"] == "candidate" for h in hits)
+    assert {"仍然", "不再"}.issubset({h["match"] for h in hits})
+    assert any(h["match"].startswith("先校验权限") and "再" in h["match"]
+               for h in hits)
+
+
+def test_context_dependent_sequence_does_not_cross_sentence_boundary():
+    text = "先完成校验。失败后再处理。\n"
+    hits = [h for h in scan_text(text) if h["rule_id"] == "M002"]
+    assert hits == []
+
+
 def test_s001_cross_line_sentence_keeps_full_original_context():
     """跨行长句的 sentence 应包含整句原文，而非只保留命中首行。"""
     first = "这是一句跨行书写的中文长句用于验证上下文能够完整保留"

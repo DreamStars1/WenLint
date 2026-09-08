@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from wenlint.feishu.document import parse_document_ref
-from wenlint.feishu.models import ApprovedSectionPlan, InspectionReport, Patch
+from wenlint.feishu.models import ApprovedSectionPlan, FetchedDocument, InspectionReport, Patch, UpdateReceipt
 from wenlint.feishu.patches import apply_approved_section
 from wenlint.feishu.projection import (
     element_to_xml,
@@ -94,17 +94,11 @@ class ScriptedClient:
 
     def fetch(self, ref):
         self.events.append(f"fetch:r{self._revision}")
-        return {
-            "ok": True,
-            "data": {
-                "document": {
-                    "document_id": "DocToken",
-                    "revision_id": self._revision,
-                    "url": REF.canonical_url,
-                },
-                "content": self._xml,
-            },
-        }
+        return FetchedDocument(
+            ref=REF,
+            revision_id=self._revision,
+            xml=self._xml,
+        )
 
     def replace_block(self, ref, block_id, xml, revision_id):
         self.replace_attempts += 1
@@ -140,10 +134,12 @@ class ScriptedClient:
             self._xml,
         )
         self._revision += 1
-        return {
-            "ok": True,
-            "data": {"result": "success", "revision_id": self._revision, "warnings": []},
-        }
+        # Intentionally report a stale revision to prove apply ignores receipts.
+        return UpdateReceipt(
+            result="success",
+            reported_revision_id=1,
+            warnings=(),
+        )
 
 
 def test_refetches_after_every_block_and_uses_new_revision(monkeypatch):

@@ -12,7 +12,7 @@ import pytest
 
 from wenlint.feishu.document import DocumentRefError, parse_document_ref
 from wenlint.feishu.findings import bind_findings
-from wenlint.feishu.models import ApprovedSectionPlan, Patch
+from wenlint.feishu.models import ApprovedSectionPlan, FetchedDocument, Patch, UpdateReceipt
 from wenlint.feishu.patches import PatchValidationError, validate_patches
 from wenlint.feishu.projection import project_xml
 from wenlint.scanner import scan_text
@@ -303,28 +303,22 @@ def test_top_level_warnings_are_surfaced_and_verified(monkeypatch):
             self._xml = xml
 
         def fetch(self, ref):
-            return {
-                "ok": True,
-                "data": {
-                    "document": {
-                        "document_id": "DocToken",
-                        "revision_id": self._revision,
-                        "url": REF.canonical_url,
-                    },
-                    "content": self._xml,
-                },
-            }
+            return FetchedDocument(
+                ref=REF,
+                revision_id=self._revision,
+                xml=self._xml,
+            )
 
         def replace_block(self, ref, block_id, block_xml, revision_id):
             root = parse_blocks(self._xml)
             original_block = element_to_xml(find_block(root, block_id))
             self._xml = self._xml.replace(original_block, block_xml, 1)
             self._revision += 1
-            return {
-                "ok": True,
-                "warnings": ["server-side normalization warning"],
-                "data": {"result": "success", "revision_id": self._revision},
-            }
+            return UpdateReceipt(
+                result="success",
+                reported_revision_id=self._revision,
+                warnings=("server-side normalization warning",),
+            )
 
     monkeypatch.setattr(
         patches_mod,

@@ -33,6 +33,10 @@ npx skills add DreamStars1/WenLint --skill wenlint --agent codex --global
 
 `npx skills` 只分发 Skill 文档与工作流，**不会**安装 Python 运行时或 `lark-cli`。飞书检查前请确认 `wenlint-feishu` 与 `lark-cli` 可用。
 
+若 `lark-cli` 报 executable missing，常见原因是当前 shell 的 Node/PATH 与安装 CLI 的 Node 版本不一致（例如 NVM 未切换）。请自行切换到安装了 `lark-cli` 的 Node 版本，或设置 `WENLINT_LARK_CLI` 指向可执行文件；WenLint **不会**自动安装、扫描用户目录或执行 `nvm use`。
+
+适配器会按 `lark-cli` 帮助能力选择 JSON 方言：旧版显式传递 `--format json`，新版依赖默认 JSON 输出。已离线验证 legacy 与 modern（含默认 JSON、`data.document.content`、`id` 属性）两种方言；兼容性以能力探测为准，不以版本号字符串为唯一条件。
+
 ## 用法
 
 ```bash
@@ -59,11 +63,15 @@ wenlint-feishu apply <url> --patch-file m.json --json  # 仅应用已批准章�
 | H001 | 模糊词（硬） | warning | `大概/好像/似乎/差不多` |
 | H002 | 模糊词（软） | candidate | `可能/或许/也许…`（academic profile 关闭；语义判断：合理 hedge KEEP / 无据断言 VERIFY） |
 | H003 | `左右` 歧义 | candidate | `左右边/两侧/手/翼` 空间义自动豁免 |
+| M001 | revision-history 过程痕迹 | candidate | 讨论、纠偏、修正和版本演变表述；核对成稿是否只需保留当前结论 |
+| M002 | context-dependent-transition | candidate | `先…再…/不再/仍然…`；核对顺序、旧状态、时间点和比较基线是否完整 |
 | E001 | 空洞强调 | suggestion | `非常/十分/真的/超级…` |
 | R001 | 冗余动词 | suggestion | `进行` + 动词（语境正则，如"进行分析"） |
 | R002 | 冗余表达 | suggestion | `是否能够` → `能否` |
 | D001 | 相邻重复词 | warning | `语义风险，留给人工` |
 | S001 | 超长句 | suggestion | 文档 80 字；SKILL.md 收紧 50 字 |
+| DOC001 | empty-heading 空标题 | warning | ATX / 飞书投影空标题；不可自动写回 |
+| DOC002 | numbered-heading-gap | candidate | 同父同级显式数字编号向前跳号；默认仅 `product`；不可自动写回 |
 
 ## 规则结构（不是"词=坏味"，是规则引擎）
 
@@ -81,14 +89,42 @@ wenlint-feishu apply <url> --patch-file m.json --json  # 仅应用已批准章�
 
 `可能` 在论文里是重要学术审慎（epistemic hedge），在营销软文里则算含糊——所以分 H001/H002 级。
 `进行` 只有后接动词才算冗余——所以 R001 用语境正则。这才是 ESLint 式规则，不是敏感词扫描。
+M001/M002 同样只负责发现候选：决策日志中的纠偏记录可能必须保留，`先校验、再写入` 也可能是完整且必要的顺序。Skill 需要阅读全文，核对当前基线和前后依赖后再决定 KEEP/REWRITE/VERIFY/ASK。
 
 ## Markdown 智能与位置精确
 
 - 等长 mask（内容替换为等长空格）→ **行号列号与原文一一对应**，front matter 存在也不错位
-- 自动跳过：标题行、表格行、代码块（围栏/缩进）、行内代码、HTML 标签与注释（含多行）、图片、front matter
+- 自动跳过：代码块（围栏/缩进）、行内代码、HTML 标签与注释（含多行）、图片、front matter、表格 delimiter 行
+- 标题：结构检查 DOC001/DOC002（不做套话词法扫描）
+- 表格：单元格独立扫描词法与句长（列号精确）
 - 链接：URL 不查，**链接文字照查（列号精确，不偏移）**
 - **引号与括号内正文照常检查**——元语境（示例词/引述）由语义层判 KEEP，不由规则层静默放过
-- 词规则只在正文行执行（段落/列表/引用块）；目录扫描自动跳过 .git/.venv/node_modules/build 等
+- 词规则在正文行（段落/列表/引用块）与表格单元格执行；目录扫描自动跳过 .git/.venv/node_modules/build 等
+
+```text
+静态规则未命中 ≠ 全文已经语义审查 ≠ 文档没有问题
+```
+
+飞书 `inspect --json` 额外返回协议字段 `coverage`（不由 finding 数量推导；Python 侧 `semantic_review` 恒为 `not_run`）：
+
+```json
+{
+  "coverage": {
+    "static": {
+      "paragraphs": "scanned",
+      "list_items": "scanned",
+      "blockquotes": "scanned",
+      "headings": "structure_only",
+      "table_cells": "scanned",
+      "code": "excluded",
+      "embedded_resources": "excluded"
+    },
+    "semantic_review": "not_run"
+  }
+}
+```
+
+本地 `wenlint --json` 仍输出 finding 数组，本阶段不迁移到新的顶层 envelope。
 
 ## 职责划分
 
@@ -99,6 +135,7 @@ wenlint-feishu apply <url> --patch-file m.json --json  # 仅应用已批准章�
 | Markdown-aware 定位 | 判断是否误报 |
 | 正则/词表/统计匹配 | 理解上下文 |
 | `可能`、`大概` 等候选发现 | 判断是真不确定还是懒得查 |
+| 讨论/纠偏史与上下文依赖措辞候选 | 核对当前稿基线、顺序和跨章节依赖 |
 | 冗余表达候选发现 | 根据语义重写 |
 | 输出行号、span、上下文、review_hint | 搜索文件库 |
 | 稳定、可测试 | 根据找到的依据修改 |
@@ -171,7 +208,7 @@ wenlint-feedback stats --input .wenlint/feedback.jsonl --json
 
 ## 配置
 
-- **profile**：`academic/product/formal/general`（词表分级 + 参数调整）
+- **profile**：`academic/product/formal/general`（词表分级 + 参数调整；`product` 启用 DOC002）
 - **自定义规则**：编辑 `wenlint/rules.py`（后续迁 `wenlint.toml`）
 - **忽略文件**：项目根 `.wenlintignore`（glob；`tests/` 尾斜杠 = 目录前缀）
 
