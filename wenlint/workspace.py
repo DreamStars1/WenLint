@@ -43,8 +43,8 @@ class WorkspaceSession:
 
     def __init__(self, root: str | Path) -> None:
         requested = Path(root)
-        is_junction = getattr(requested, "is_junction", lambda: False)
-        if requested.is_symlink() or is_junction():
+        absolute = Path(os.path.abspath(requested))
+        if any(_is_link(path) for path in (absolute, *absolute.parents)):
             raise WorkspaceError("工作区根目录不能是符号链接或目录联接")
         resolved = requested.resolve(strict=True)
         if not resolved.is_dir():
@@ -175,7 +175,7 @@ class WorkspaceSession:
         return (
             path.name in IGNORED_DIRECTORIES
             or path.name.startswith(".")
-            or path.is_symlink()
+            or _is_link(path)
         )
 
     def _resolve_file(self, relative_path: str) -> Path:
@@ -200,3 +200,8 @@ class WorkspaceSession:
                 raise WorkspaceError("工作区不读取符号链接")
             parent = parent.parent
         return resolved
+
+
+def _is_link(path: Path) -> bool:
+    is_junction = getattr(path, "is_junction", lambda: False)
+    return path.is_symlink() or is_junction()

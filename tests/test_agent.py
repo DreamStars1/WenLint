@@ -278,6 +278,87 @@ def test_review_drops_semantic_issue_that_duplicates_a_static_match() -> None:
     assert result.semantic_issue_count == 0
 
 
+def test_review_drops_larger_semantic_span_overlapping_static_match() -> None:
+    def opener(request: object, *, timeout: float) -> FakeResponse:
+        if _request_lane(request) == "static":
+            body = {
+                "summary": "静态候选已裁决。",
+                "decisions": [
+                    {
+                        "finding_index": 1,
+                        "rule": "M002",
+                        "action": "KEEP",
+                        "reason": "上下文清楚。",
+                        "before": "仍然",
+                        "after": "",
+                    }
+                ],
+            }
+        else:
+            body = {
+                "summary": "发现问题。",
+                "decisions": [
+                    {
+                        "finding_index": None,
+                        "rule": "SEMANTIC_CONTEXT",
+                        "action": "ASK",
+                        "reason": "重复报告静态候选。",
+                        "before": "系统仍然保留旧值",
+                        "after": "",
+                    }
+                ],
+            }
+        return FakeResponse(_response(json.dumps(body, ensure_ascii=False)))
+
+    result = OpenAICompatibleAgent(
+        AgentConfig("https://api.example.com/v1", "key", "model"), opener=opener
+    ).review("系统仍然保留旧值。")
+
+    assert result.semantic_issue_count == 0
+
+
+def test_review_keeps_distinct_semantic_span_in_same_sentence() -> None:
+    source = "系统仍然保留旧值，但负责人未定义。"
+
+    def opener(request: object, *, timeout: float) -> FakeResponse:
+        if _request_lane(request) == "static":
+            body = {
+                "summary": "静态候选已裁决。",
+                "decisions": [
+                    {
+                        "finding_index": 1,
+                        "rule": "M002",
+                        "action": "KEEP",
+                        "reason": "上下文清楚。",
+                        "before": "仍然",
+                        "after": "",
+                    }
+                ],
+            }
+        else:
+            body = {
+                "summary": "发现另一处问题。",
+                "decisions": [
+                    {
+                        "finding_index": None,
+                        "rule": "SEMANTIC_MISSING_SUBJECT",
+                        "action": "ASK",
+                        "reason": "负责人没有定义。",
+                        "before": "负责人未定义",
+                        "after": "",
+                    }
+                ],
+            }
+        return FakeResponse(_response(json.dumps(body, ensure_ascii=False)))
+
+    result = OpenAICompatibleAgent(
+        AgentConfig("https://api.example.com/v1", "key", "model"), opener=opener
+    ).review(source)
+
+    assert result.semantic_issue_count == 1
+    assert result.decisions[-1].rule == "SEMANTIC_MISSING_SUBJECT"
+
+
 def test_review_rejects_malformed_provider_response_without_echoing_source() -> None:
     source = "这段原文不应出现在异常消息里"
 

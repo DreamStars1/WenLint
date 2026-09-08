@@ -187,7 +187,7 @@ class OpenAICompatibleAgent:
         summaries = [results_by_lane[lane][0] for lane in lanes]
         static_decisions = results_by_lane.get(ReviewLane.STATIC, ("", []))[1]
         semantic_decisions = results_by_lane[ReviewLane.SEMANTIC][1]
-        semantic_decisions = _remove_static_duplicates(semantic_decisions, findings)
+        semantic_decisions = _remove_static_overlaps(text, semantic_decisions, findings)
         decisions = _resolve_rewrite_conflicts(text, static_decisions, semantic_decisions)
         revised_text = _derive_revision(text, decisions)
         return AgentReview(
@@ -364,18 +364,50 @@ def _parse_lane(
     return summary.strip(), decisions
 
 
-def _remove_static_duplicates(
-    decisions: list[ReviewDecision], findings: list[dict[str, object]]
+def _remove_static_overlaps(
+    source: str,
+    decisions: list[ReviewDecision],
+    findings: list[dict[str, object]],
 ) -> list[ReviewDecision]:
-    """Drop model-new items that exactly repeat a scanner match or sentence."""
+    """Keep only semantic issues whose source span is outside scanner matches."""
 
-    covered = {
-        value.strip()
-        for finding in findings
-        for key in ("match", "sentence")
-        if isinstance((value := finding.get(key)), str) and value.strip()
-    }
-    return [item for item in decisions if not item.before or item.before.strip() not in covered]
+    covered = _static_finding_spans(source, findings)
+    independent: list[ReviewDecision] = []
+    for item in decisions:
+        if not item.before:
+            independent.append(item)
+            continue
+        if source.count(item.before) != 1:
+            raise AgentProtocolError("全文语义问题的 before 无法唯一定位")
+        start = source.index(item.before)
+        end = start + len(item.before)
+        if any(start < other_end and end > other_start for other_start, other_end in covered):
+            continue
+        independent.append(item)
+    return independent
+
+
+def _static_finding_spans(
+    source: str, findings: list[dict[str, object]]
+) -> list[tuple[int, int]]:
+    line_starts = [0]
+    for index, character in enumerate(source):
+        if character == "\n":
+            line_starts.append(index + 1)
+    spans: list[tuple[int, int]] = []
+    for finding in findings:
+        line = finding.get("line")
+        column = finding.get("col")
+        match = finding.get("match")
+        if not isinstance(line, int) or not isinstance(column, int):
+            continue
+        if not isinstance(match, str) or not match or not 1 <= line <= len(line_starts):
+            continue
+        start = line_starts[line - 1] + column - 1
+        end = start + len(match)
+        if source[start:end] == match:
+            spans.append((start, end))
+    return spans
 
 
 def _validate_finding_coverage(

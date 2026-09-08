@@ -59,6 +59,36 @@ def test_workspace_rejects_symlink_root(tmp_path, monkeypatch) -> None:
         WorkspaceSession(tmp_path)
 
 
+def test_workspace_rejects_symlink_in_root_ancestor(tmp_path, monkeypatch) -> None:
+    original = Path.is_symlink
+    linked_parent = tmp_path.parent
+    monkeypatch.setattr(
+        Path,
+        "is_symlink",
+        lambda path: path == linked_parent or original(path),
+    )
+
+    with pytest.raises(WorkspaceError, match="符号链接"):
+        WorkspaceSession(tmp_path)
+
+
+def test_workspace_index_skips_nested_windows_junction(tmp_path, monkeypatch) -> None:
+    (tmp_path / "normal").mkdir()
+    (tmp_path / "normal" / "included.md").write_text("正文", encoding="utf-8")
+    (tmp_path / "linked").mkdir()
+    (tmp_path / "linked" / "outside.md").write_text("外部正文", encoding="utf-8")
+    original = Path.is_junction
+    monkeypatch.setattr(
+        Path,
+        "is_junction",
+        lambda path: path.name == "linked" or original(path),
+    )
+
+    paths = [item["path"] for item in WorkspaceSession(tmp_path).index()]
+
+    assert paths == ["normal/included.md"]
+
+
 def test_workspace_write_requires_matching_hash_and_confirmation(tmp_path) -> None:
     target = tmp_path / "draft.md"
     target.write_text("原文", encoding="utf-8")

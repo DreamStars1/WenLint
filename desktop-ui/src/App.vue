@@ -197,10 +197,6 @@ async function selectWorkspace() {
   }
 }
 
-async function changeWorkspace() {
-  await selectWorkspace()
-}
-
 async function refreshWorkspace() {
   try {
     const result = await callApi('workspace_index')
@@ -303,13 +299,24 @@ async function runStaticScan() {
   }
 }
 
-function requestSemanticReview() {
+async function requestSemanticReview() {
   if (!sourceText.value.trim()) return notify('请打开文件或粘贴待审查文本', 'error')
   if (!config.baseUrl.trim() || !config.apiKey.trim() || !config.model.trim()) {
     settingsOpen.value = true
     return notify('请完整填写模型连接信息', 'error')
   }
-  confirmOpen.value = true
+  busy.value = 'prepare-review'
+  try {
+    const result = await callApi('static_scan', documentPayload())
+    if (!result.ok) throw new Error(result.error)
+    findings.value = result.findings
+    selectedFindingIndex.value = 0
+    confirmOpen.value = true
+  } catch (error) {
+    notify(error.message, 'error')
+  } finally {
+    busy.value = ''
+  }
 }
 
 async function runSemanticReview() {
@@ -396,7 +403,7 @@ function actionName(action) {
         <span class="toolbar-divider"></span>
         <label class="profile-select"><span>场景</span><select v-model="config.profile"><option v-for="(label, key) in profileNames" :key="key" :value="key">{{ label }}</option></select></label>
         <button class="tool-button" :disabled="!!busy" @click="runStaticScan"><span v-if="busy === 'scan'" class="spinner"></span>{{ busy === 'scan' ? '检查中' : '本地检查' }}</button>
-        <button class="tool-button primary" :disabled="!!busy" @click="requestSemanticReview"><span v-if="busy === 'review'" class="spinner"></span>{{ busy === 'review' ? '复核中' : '语义复核' }}</button>
+        <button class="tool-button primary" :disabled="!!busy" @click="requestSemanticReview"><span v-if="['prepare-review', 'review'].includes(busy)" class="spinner"></span>{{ busy === 'prepare-review' ? '准备中' : busy === 'review' ? '复核中' : '语义复核' }}</button>
         <button class="icon-button" :class="{ active: settingsOpen }" title="模型设置" @click="settingsOpen = !settingsOpen">设置</button>
       </nav>
     </header>
@@ -420,7 +427,7 @@ function actionName(action) {
           </button>
           <div v-if="!filteredWorkspaceFiles.length" class="workspace-empty">没有可审查的文本文件</div>
         </div>
-        <footer><span>{{ workspace.files.length }} 个文本文件</span><div><button @click="refreshWorkspace">刷新</button><button @click="changeWorkspace">更换目录</button></div></footer>
+        <footer><span>{{ workspace.files.length }} 个文本文件</span><div><button @click="refreshWorkspace">刷新</button><button @click="selectWorkspace">更换目录</button></div></footer>
       </aside>
 
       <article class="editor-pane" @dragover.prevent="dragActive = true" @dragleave.prevent="dragActive = false" @drop.prevent="acceptDroppedFile">
@@ -515,7 +522,7 @@ function actionName(action) {
         <h2>发送文本进行语义复核</h2>
         <p>当前正文、静态检查结果{{ workspace.selectedPath ? '和工作区文件索引' : '' }}将发送到以下模型服务：</p>
         <code>{{ config.baseUrl }}</code>
-        <ul><li>候选裁决与全文独立发现会并发执行</li><li>API Key 不会写入配置文件或日志</li><li>修改稿不会自动覆盖原文件</li><li>请确认该服务可以接收当前文档内容</li></ul>
+        <ul><li>{{ findings.length ? `将并发执行候选裁决和全文独立发现（${findings.length} 条候选）` : '当前没有规则候选，将单独执行全文语义复核' }}</li><li>API Key 不会写入配置文件或日志</li><li>修改稿不会自动覆盖原文件</li><li>请确认该服务可以接收当前文档内容</li></ul>
         <div class="modal-actions"><button class="tool-button" @click="confirmOpen = false">取消</button><button class="tool-button primary" @click="runSemanticReview">确认发送</button></div>
       </section>
     </div>
