@@ -2,15 +2,15 @@
 
 ## 获取应用
 
-直接下载 [v0.6.1 Release](https://github.com/DreamStars1/WenLint/releases/tag/v0.6.1) 中对应平台的 ZIP。也可在 GitHub Actions 中手动运行 **build-desktop**（文件名保留为 `build-windows.yml`）生成工件。推送 `v*` 标签时，所有平台测试和构建成功后统一发布到 GitHub Release。
+直接下载 [v0.6.2 Release](https://github.com/DreamStars1/WenLint/releases/tag/v0.6.2) 中对应平台的 ZIP。也可在 GitHub Actions 中手动运行 **build-desktop**（文件名保留为 `build-windows.yml`）生成工件。推送 `v*` 标签时，所有平台测试和构建成功后统一发布到 GitHub Release。
 
-v0.6.1 对应提交 `459678d83e03c06faa2fb66b85b8a93f8562607b`，已通过 [Windows、macOS arm64/x64原生构建与打包自检](https://github.com/DreamStars1/WenLint/actions/runs/34264065504)，三个 ZIP、三份校验和与三份构建清单均已公开发布。已核对清单中的提交及 SHA-256 与 GitHub 资产摘要一致。
+v0.6.2 对应提交 `720eff56331841f512cbf38441236799e2e8a089`，已通过 [Windows、macOS arm64/x64原生构建与打包自检](https://github.com/DreamStars1/WenLint/actions/runs/34273469498)，三个 ZIP、三份校验和与三份构建清单均已公开发布。已核对清单中的提交及 SHA-256 与 GitHub 资产摘要一致。
 
 | ZIP | SHA-256 |
 |---|---|
-| `WenLint-windows-x64.zip` | `d18f1636b6e9d95951712ed9f9e0fcc2ec3c680a9d72acad03ae6379f61e60ef` |
-| `WenLint-macos-arm64.zip` | `5acf9afe87be2652052dfe2ad35c18421aa2d8925bad8aba67be48ff37d8a1ff` |
-| `WenLint-macos-x64.zip` | `3bfe6d553e636321af71120a628f9321d47befe5cf2002f704c405a0254c5a04` |
+| `WenLint-windows-x64.zip` | `b91bc31be1a2beb3490ea108b37b242b8fb65c85a034033c471538c6b061d452` |
+| `WenLint-macos-arm64.zip` | `d7a0c1dcdde7e15fce14be105160930e75d9f8697e830eec2d02677f0a5f08d7` |
+| `WenLint-macos-x64.zip` | `208bbe23813cef6a78a3dd50c945165940b7fa7bdebbc8394b66db2267700695` |
 
 | 平台 | 构建环境 | 文件 | 启动方式 |
 |---|---|---|---|
@@ -26,7 +26,7 @@ Windows 采用目录分发，减少单文件程序启动时重复解包的成本
 
 ## 本地构建
 
-0.6.1两种Mac发行包还通过了[实际窗口启动验收](https://github.com/DreamStars1/WenLint/actions/runs/34264484963)，截图已经目视核对，见[窗口证据](FINAL_DESKTOP_REVIEW.md)。验证了原生应用首页完整渲染；完整Mac交互流程仍未人工验收。
+0.6.2两种Mac发行包还通过了[实际窗口启动验收](https://github.com/DreamStars1/WenLint/actions/runs/34273864904)，截图已经目视核对，见[本轮验收记录](DESKTOP_062_REVIEW.md)。验证了原生应用首页完整渲染；完整Mac交互流程仍未人工验收。
 
 需要 Python 3.13、Node.js 22 和 pnpm 10.15.1。先在虚拟环境安装 `python -m pip install -e ".[test,desktop-build]"`。
 

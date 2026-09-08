@@ -53,3 +53,13 @@
 - 独立子agent扩展前端状态集成测试，检查新用户输入与确认路径。这属于离线真实Vue状态集成，不能标为真实模型E2E；上表中的原生模型验证由主agent实际执行。
 
 Windows 的上述完整流程已实测。macOS分发由原生runner构建与自检；Mac完整交互及代理组合不等同于Windows验证，需分别标注证据。签名和Apple公证仍沿用分发文档中的限制。
+
+## 发布验收
+
+[v0.6.2](https://github.com/DreamStars1/WenLint/releases/tag/v0.6.2) 已公开发布，代码提交为 `720eff56331841f512cbf38441236799e2e8a089`。[三平台原生构建、自检和发布](https://github.com/DreamStars1/WenLint/actions/runs/34273469498) 以及[跨环境测试](https://github.com/DreamStars1/WenLint/actions/runs/34273469461) 全部通过。9份资产齐全，三个ZIP的GitHub摘要、校验文件和构建清单一致，清单提交均匹配该标签。具体校验值见[分发说明](DISTRIBUTION.md)。
+
+[Mac原生窗口验收](https://github.com/DreamStars1/WenLint/actions/runs/34273864904) 下载并校验已发布的两种Mac包，分别实际启动并捕获窗口。已目视核对两个截图：0.6.2标题、正文编辑区、无需密钥示例、问题/结论/修改稿/Agent页签和状态栏均正常渲染。此项只证明启动和首页渲染，不是完整Mac模型交互验收。
+
+![Apple silicon Mac 0.6.2 首页](../../demo/evidence/macos-062-arm64.png)
+
+![Intel Mac 0.6.2 首页](../../demo/evidence/macos-062-x64.png)
