@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import wenlint.desktop as desktop_module
 from wenlint.agent import AgentReview
 from wenlint.desktop import DesktopApi
@@ -57,6 +60,50 @@ def test_save_requires_an_attached_window() -> None:
         "ok": False,
         "error": "窗口尚未就绪",
     }
+
+
+def _open_standalone_file(api, target, monkeypatch) -> dict[str, object]:
+    class FakeWindow:
+        def create_file_dialog(self, *args, **kwargs):
+            return [str(target)]
+
+    fake_webview = SimpleNamespace(FileDialog=SimpleNamespace(OPEN=1))
+    monkeypatch.setitem(sys.modules, "webview", fake_webview)
+    api.attach_window(FakeWindow())
+    return api.open_file()
+
+
+def test_open_file_returns_hash_and_confirmed_save_updates_original(
+    tmp_path, monkeypatch
+) -> None:
+    target = tmp_path / "draft.md"
+    target.write_text("原文", encoding="utf-8")
+    api = DesktopApi()
+    opened = _open_standalone_file(api, target, monkeypatch)
+
+    result = api.save_original({"text": "修改稿", "confirmed": True})
+
+    assert len(opened["sha256"]) == 64
+    assert result["ok"] is True
+    assert len(result["sha256"]) == 64
+    assert target.read_text(encoding="utf-8") == "修改稿"
+
+
+def test_save_original_requires_confirmation_and_rejects_external_change(
+    tmp_path, monkeypatch
+) -> None:
+    target = tmp_path / "draft.md"
+    target.write_text("原文", encoding="utf-8")
+    api = DesktopApi()
+    _open_standalone_file(api, target, monkeypatch)
+
+    unconfirmed = api.save_original({"text": "修改稿", "confirmed": False})
+    target.write_text("外部修改", encoding="utf-8")
+    conflicted = api.save_original({"text": "修改稿", "confirmed": True})
+
+    assert unconfirmed["ok"] is False and "确认" in unconfirmed["error"]
+    assert conflicted["ok"] is False and "其他程序修改" in conflicted["error"]
+    assert target.read_text(encoding="utf-8") == "外部修改"
 
 
 def test_agent_review_reports_completed_state_even_without_changes(monkeypatch) -> None:

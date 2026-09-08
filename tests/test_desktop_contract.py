@@ -39,3 +39,7 @@ def test_vue_desktop_exists_and_does_not_persist_credentials() -> None:
     assert "语义复核已完成" in vue_source
     assert "模型新发现" in vue_source
     assert "open_workspace" in source and "workspace_write" in source
+    assert "修改原因" in vue_source and "检查上下文" in vue_source
+    assert "撤销修改" in vue_source and "恢复修改" in vue_source
+    assert "保存到原文件" in vue_source and "另存为" in vue_source
+    assert "save_original" in source and "write_checked_file" in source

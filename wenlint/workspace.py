@@ -110,45 +110,17 @@ class WorkspaceSession:
         *,
         confirmed: bool,
     ) -> dict[str, object]:
-        if not confirmed:
-            raise WorkspaceError("写回工作区前必须由用户明确确认")
-        if not isinstance(text, str):
-            raise WorkspaceError("待写回内容必须是文本")
         target = self._resolve_file(relative_path)
-        try:
-            current = target.read_bytes()
-        except OSError as exc:
-            raise WorkspaceError(f"无法读取工作区文件（{type(exc).__name__}）") from None
-        if hashlib.sha256(current).hexdigest() != expected_sha256:
-            raise WorkspaceError("文件已被其他程序修改，请重新打开后再写回")
-
-        encoded = text.encode("utf-8")
-        temporary_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="wb",
-                prefix=f".{target.name}.wenlint-",
-                suffix=".tmp",
-                dir=target.parent,
-                delete=False,
-            ) as temporary:
-                temporary.write(encoded)
-                temporary.flush()
-                os.fsync(temporary.fileno())
-                temporary_path = Path(temporary.name)
-            os.replace(temporary_path, target)
-            temporary_path = None
-        except OSError as exc:
-            raise WorkspaceError(f"写回失败（{type(exc).__name__}）") from None
-        finally:
-            if temporary_path is not None:
-                try:
-                    temporary_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+        digest = write_checked_file(
+            target,
+            text,
+            expected_sha256,
+            confirmed=confirmed,
+            confirmation_error="写回工作区前必须由用户明确确认",
+        )
         return {
             "path": target.relative_to(self.root).as_posix(),
-            "sha256": hashlib.sha256(encoded).hexdigest(),
+            "sha256": digest,
         }
 
     def review_context(self, relative_path: str) -> str:
@@ -213,3 +185,51 @@ def _is_link(path: Path) -> bool:
         return False
     reparse_point = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
     return bool(attributes & reparse_point)
+
+
+def write_checked_file(
+    target: Path,
+    text: str,
+    expected_sha256: str,
+    *,
+    confirmed: bool,
+    confirmation_error: str,
+) -> str:
+    """Atomically replace one trusted path after confirmation and hash checking."""
+
+    if not confirmed:
+        raise WorkspaceError(confirmation_error)
+    if not isinstance(text, str):
+        raise WorkspaceError("待保存内容必须是文本")
+    try:
+        current = target.read_bytes()
+    except OSError as exc:
+        raise WorkspaceError(f"无法读取文件（{type(exc).__name__}）") from None
+    if hashlib.sha256(current).hexdigest() != expected_sha256:
+        raise WorkspaceError("文件已被其他程序修改，请重新打开后再保存")
+
+    encoded = text.encode("utf-8")
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{target.name}.wenlint-",
+            suffix=".tmp",
+            dir=target.parent,
+            delete=False,
+        ) as temporary:
+            temporary.write(encoded)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        os.replace(temporary_path, target)
+        temporary_path = None
+    except OSError as exc:
+        raise WorkspaceError(f"保存失败（{type(exc).__name__}）") from None
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return hashlib.sha256(encoded).hexdigest()

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -14,7 +15,7 @@ from . import __version__
 from .agent import AgentConfig, AgentError, MAX_TEXT_CHARS, OpenAICompatibleAgent
 from .profiles import PROFILES
 from .scanner import scan_text
-from .workspace import WorkspaceError, WorkspaceSession
+from .workspace import WorkspaceError, WorkspaceSession, write_checked_file
 
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -22,6 +23,12 @@ FILE_TYPES = (
     "文本文档 (*.txt;*.md;*.markdown;*.rst)",
     "所有文件 (*.*)",
 )
+
+
+@dataclass
+class OpenedFile:
+    path: Path
+    sha256: str
 
 
 def frontend_index() -> Path:
@@ -38,6 +45,7 @@ class DesktopApi:
     def __init__(self) -> None:
         self._window: Any | None = None
         self._workspace: WorkspaceSession | None = None
+        self._opened_file: OpenedFile | None = None
 
     def attach_window(self, window: Any) -> None:
         self._window = window
@@ -64,6 +72,7 @@ class DesktopApi:
             if not selected:
                 return {"ok": True, "cancelled": True}
             self._workspace = WorkspaceSession(selected[0])
+            self._opened_file = None
             return {
                 "ok": True,
                 "cancelled": False,
@@ -92,7 +101,9 @@ class DesktopApi:
             return _failure("请求格式无效")
         try:
             path = _required_string(payload, "path", "工作区文件路径")
-            return {"ok": True, **self._workspace.read(path)}
+            result = self._workspace.read(path)
+            self._opened_file = None
+            return {"ok": True, **result}
         except (ValueError, WorkspaceError) as exc:
             return _failure(str(exc))
 
@@ -135,20 +146,24 @@ class DesktopApi:
             )
             if not selected:
                 return {"ok": True, "cancelled": True}
-            path = Path(selected[0])
-            if path.stat().st_size > MAX_FILE_BYTES:
+            path = Path(selected[0]).resolve(strict=True)
+            raw = path.read_bytes()
+            if len(raw) > MAX_FILE_BYTES:
                 return _failure("文件超过 2 MB，请拆分后再处理")
-            content = path.read_text(encoding="utf-8-sig")
+            content = raw.decode("utf-8-sig")
             if len(content) > MAX_TEXT_CHARS:
                 return _failure(
                     f"文本超过 {MAX_TEXT_CHARS:,} 个字符，请拆分后再处理"
                 )
+            digest = hashlib.sha256(raw).hexdigest()
+            self._opened_file = OpenedFile(path=path, sha256=digest)
             return {
                 "ok": True,
                 "cancelled": False,
                 "path": str(path),
                 "filename": path.name,
                 "content": content,
+                "sha256": digest,
             }
         except (OSError, UnicodeError) as exc:
             return _failure(f"无法读取文件：{type(exc).__name__}")
@@ -212,7 +227,7 @@ class DesktopApi:
         if not isinstance(payload, dict):
             return _failure("请求格式无效")
         text = payload.get("text")
-        if not isinstance(text, str) or not text:
+        if not isinstance(text, str):
             return _failure("没有可保存的修改稿")
         suggested = payload.get("suggestedName", "wenlint-review.revised.md")
         if not isinstance(suggested, str) or not suggested.strip():
@@ -233,6 +248,33 @@ class DesktopApi:
             return {"ok": True, "cancelled": False, "path": str(target)}
         except OSError as exc:
             return _failure(f"保存失败：{type(exc).__name__}")
+
+    def save_original(self, payload: object) -> dict[str, object]:
+        """Save to the last file selected by the native open dialog."""
+
+        if self._opened_file is None:
+            return _failure("当前文档没有可保存的原文件")
+        if not isinstance(payload, dict):
+            return _failure("请求格式无效")
+        text = payload.get("text")
+        if not isinstance(text, str):
+            return _failure("待保存内容必须是文本")
+        try:
+            digest = write_checked_file(
+                self._opened_file.path,
+                text,
+                self._opened_file.sha256,
+                confirmed=payload.get("confirmed") is True,
+                confirmation_error="保存到原文件前必须由用户明确确认",
+            )
+            self._opened_file.sha256 = digest
+            return {
+                "ok": True,
+                "path": str(self._opened_file.path),
+                "sha256": digest,
+            }
+        except WorkspaceError as exc:
+            return _failure(str(exc))
 
 
 def _document_request(payload: object) -> tuple[str, str, str]:

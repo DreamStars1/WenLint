@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { buildRevision, changeContext } from './revision.js'
 
 const sourceText = ref('')
 const filename = ref('未命名文档.md')
@@ -26,10 +27,14 @@ const showKey = ref(false)
 const settingsOpen = ref(false)
 const confirmOpen = ref(false)
 const workspaceWriteConfirm = ref(false)
+const saveOriginalConfirm = ref(false)
 const dragActive = ref(false)
 const editingStarted = ref(false)
 const sourceEditor = ref(null)
-const version = ref('0.4.0')
+const version = ref('0.5.0')
+const standaloneSha256 = ref('')
+const undoneChangeIds = ref([])
+const selectedChangeIndex = ref(0)
 const limits = reactive({ maxFileBytes: 0, maxTextChars: 0 })
 const workspaceQuery = ref('')
 const workspace = reactive({
@@ -59,10 +64,21 @@ const profileNames = {
 }
 
 const characterCount = computed(() => sourceText.value.length)
-const hasRevision = computed(() => revisedText.value.length > 0)
 const selectedFinding = computed(() => findings.value[selectedFindingIndex.value] || null)
 const selectedDecision = computed(() => decisions.value[selectedDecisionIndex.value] || null)
-const rewriteDecisions = computed(() => decisions.value.filter((item) => item.action === 'REWRITE'))
+const rewriteChanges = computed(() => decisions.value
+  .map((item, id) => ({ ...item, id }))
+  .filter((item) => item.action === 'REWRITE'))
+const rewriteDecisions = computed(() => rewriteChanges.value)
+const activeRewriteChanges = computed(() => {
+  const undone = new Set(undoneChangeIds.value)
+  return rewriteChanges.value.filter((item) => !undone.has(item.id))
+})
+const selectedChange = computed(() => rewriteChanges.value[selectedChangeIndex.value] || null)
+const selectedChangeContext = computed(() => (
+  selectedChange.value ? changeContext(reviewSource.value, selectedChange.value.before) : null
+))
+const hasRevision = computed(() => reviewState.value === 'complete' && rewriteChanges.value.length > 0)
 const pendingCount = computed(
   () => decisions.value.filter((item) => ['VERIFY', 'ASK'].includes(item.action)).length,
 )
@@ -71,6 +87,7 @@ const reviewIsStale = computed(
     && (sourceText.value !== reviewSource.value || config.profile !== reviewProfile.value),
 )
 const revisionStale = computed(() => hasRevision.value && reviewIsStale.value)
+const canSaveOriginal = computed(() => Boolean(workspace.selectedPath || standaloneSha256.value))
 const workspaceDirty = computed(
   () => workspace.selectedPath && sourceText.value !== workspace.loadedText,
 )
@@ -138,6 +155,8 @@ function clearSemanticResults() {
   modelCalls.value = 0
   semanticIssueCount.value = 0
   selectedDecisionIndex.value = 0
+  undoneChangeIds.value = []
+  selectedChangeIndex.value = 0
 }
 
 function clearResults() {
@@ -152,6 +171,10 @@ function clearWorkspaceDocument() {
   workspace.loadedText = ''
 }
 
+function clearStandaloneDocument() {
+  standaloneSha256.value = ''
+}
+
 async function openFile() {
   if (!apiReady.value || busy.value) return
   try {
@@ -162,6 +185,7 @@ async function openFile() {
     editingStarted.value = true
     filename.value = result.filename
     filePath.value = result.path
+    standaloneSha256.value = result.sha256
     clearWorkspaceDocument()
     clearResults()
     notify(`已打开 ${result.filename}`, 'success')
@@ -190,6 +214,7 @@ async function selectWorkspace() {
     workspace.files = result.files
     workspaceQuery.value = ''
     clearWorkspaceDocument()
+    clearStandaloneDocument()
     filePath.value = ''
     notify(`已关联工作区 ${result.name}`, 'success')
   } catch (error) {
@@ -220,6 +245,7 @@ async function openWorkspaceFile(item) {
     workspace.selectedPath = result.path
     workspace.selectedSha256 = result.sha256
     workspace.loadedText = result.content
+    clearStandaloneDocument()
     clearResults()
     notify(`已打开 ${result.path}`, 'success')
   } catch (error) {
@@ -265,6 +291,7 @@ async function acceptDroppedFile(event) {
     filename.value = file.name
     filePath.value = ''
     clearWorkspaceDocument()
+    clearStandaloneDocument()
     clearResults()
     notify(`已打开 ${file.name}`, 'success')
   } catch {
@@ -348,6 +375,8 @@ async function runSemanticReview() {
     modelCalls.value = result.modelCalls || 1
     semanticIssueCount.value = result.semanticIssueCount || 0
     selectedDecisionIndex.value = 0
+    selectedChangeIndex.value = 0
+    undoneChangeIds.value = []
     activeTab.value = 'decisions'
     const message = result.decisions.length
       ? `语义复核完成：${result.decisions.length} 条结论，其中 ${semanticIssueCount.value} 条为模型新发现`
@@ -366,11 +395,30 @@ function applyRevision() {
   if (!hasRevision.value) return
   if (revisionStale.value) return notify('正文或场景已变化，请重新复核后再应用', 'error')
   sourceText.value = revisedText.value
-  reviewSource.value = revisedText.value
+  clearResults()
+  activeTab.value = 'findings'
   notify('修改稿已放入编辑区，原文件未覆盖', 'success')
 }
 
-async function saveRevision() {
+function toggleChange(item) {
+  const undone = new Set(undoneChangeIds.value)
+  if (undone.has(item.id)) undone.delete(item.id)
+  else undone.add(item.id)
+  try {
+    revisedText.value = buildRevision(reviewSource.value, rewriteChanges.value, undone)
+    undoneChangeIds.value = [...undone]
+  } catch (error) {
+    notify(error.message, 'error')
+  }
+}
+
+function selectRelativeChange(offset) {
+  const total = rewriteChanges.value.length
+  if (!total) return
+  selectedChangeIndex.value = (selectedChangeIndex.value + offset + total) % total
+}
+
+async function saveRevisionAs() {
   if (!hasRevision.value) return
   const dot = filename.value.lastIndexOf('.')
   const stem = dot > 0 ? filename.value.slice(0, dot) : filename.value
@@ -382,6 +430,31 @@ async function saveRevision() {
     })
     if (!result.ok) throw new Error(result.error)
     if (!result.cancelled) notify(`已保存到 ${result.path}`, 'success')
+  } catch (error) {
+    notify(error.message, 'error')
+  }
+}
+
+async function saveToOriginal() {
+  saveOriginalConfirm.value = false
+  if (!canSaveOriginal.value || revisionStale.value || !hasRevision.value) return
+  try {
+    const result = workspace.selectedPath
+      ? await callApi('workspace_write', {
+        path: workspace.selectedPath,
+        text: revisedText.value,
+        expectedSha256: workspace.selectedSha256,
+        confirmed: true,
+      })
+      : await callApi('save_original', { text: revisedText.value, confirmed: true })
+    if (!result.ok) throw new Error(result.error)
+    if (workspace.selectedPath) workspace.selectedSha256 = result.sha256
+    else standaloneSha256.value = result.sha256
+    sourceText.value = revisedText.value
+    workspace.loadedText = sourceText.value
+    clearResults()
+    activeTab.value = 'findings'
+    notify(`已保存到原文件：${result.path}`, 'success')
   } catch (error) {
     notify(error.message, 'error')
   }
@@ -501,13 +574,25 @@ function actionName(action) {
           <div v-else-if="reviewState === 'complete' && !rewriteDecisions.length" class="review-complete"><span class="complete-mark">✓</span><h2>复核完成，正文无变化</h2><p>模型没有提出可直接应用的改写。VERIFY 或 ASK 项仍需在“复核结论”中人工处理。</p><small>{{ reviewMeta }}</small></div>
           <div v-else-if="!hasRevision" class="empty-state"><strong>没有可用修改稿</strong><p>本次复核未完成，请检查模型连接后重试。</p></div>
           <template v-else>
-            <div class="revision-toolbar"><div><button :class="{ active: revisionMode === 'changes' }" @click="revisionMode = 'changes'">仅看变更</button><button :class="{ active: revisionMode === 'full' }" @click="revisionMode = 'full'">查看全文</button></div><span>{{ rewriteDecisions.length }} 处变更</span></div>
+            <div class="revision-toolbar"><div><button :class="{ active: revisionMode === 'changes' }" @click="revisionMode = 'changes'">逐条变更</button><button :class="{ active: revisionMode === 'full' }" @click="revisionMode = 'full'">全文核对</button></div><span>{{ activeRewriteChanges.length }} 处生效<span v-if="undoneChangeIds.length"> · {{ undoneChangeIds.length }} 处已撤销</span></span></div>
             <div v-if="revisionMode === 'changes'" class="changes-list">
-              <div v-if="!rewriteDecisions.length" class="empty-state compact"><strong>正文无变化</strong></div>
-              <div v-for="(item, index) in rewriteDecisions" :key="index" class="diff-block"><header>{{ item.rule }} · 变更 {{ index + 1 }}</header><p class="removed">− {{ item.before }}</p><p class="added">＋ {{ item.after }}</p></div>
+              <div v-for="(item, index) in rewriteChanges" :key="item.id" :class="['diff-block', { undone: undoneChangeIds.includes(item.id) }]">
+                <header><span>{{ item.rule }} · 变更 {{ index + 1 }}</span><em v-if="item.origin === 'semantic'">模型新发现</em></header>
+                <div class="diff-reason"><strong>修改原因</strong><p>{{ item.reason }}</p></div>
+                <p class="removed">− {{ item.before }}</p><p class="added">＋ {{ item.after }}</p>
+                <div class="diff-actions"><button @click="selectedChangeIndex = index; revisionMode = 'full'">检查上下文</button><button class="undo-button" @click="toggleChange(item)">{{ undoneChangeIds.includes(item.id) ? '恢复修改' : '撤销修改' }}</button></div>
+              </div>
             </div>
-            <textarea v-else v-model="revisedText" class="revision-editor" spellcheck="false"></textarea>
-            <footer class="revision-actions"><button class="tool-button" @click="saveRevision">另存为</button><button class="tool-button primary" :disabled="revisionStale" @click="applyRevision">应用到编辑区</button></footer>
+            <div v-else class="full-review">
+              <section v-if="selectedChange && selectedChangeContext" class="context-inspector">
+                <div class="context-heading"><div><strong>变更 {{ selectedChangeIndex + 1 }} / {{ rewriteChanges.length }}</strong><span>{{ selectedChange.rule }}</span></div><div><button title="上一处" @click="selectRelativeChange(-1)">←</button><button title="下一处" @click="selectRelativeChange(1)">→</button></div></div>
+                <p class="context-reason"><strong>修改原因</strong>{{ selectedChange.reason }}</p>
+                <div class="context-quote"><span>{{ selectedChangeContext.before }}</span><mark>{{ selectedChangeContext.focus }}</mark><span>{{ selectedChangeContext.after }}</span></div>
+                <div class="context-proposal"><span>建议改为</span><p>{{ selectedChange.after }}</p><button class="undo-button" @click="toggleChange(selectedChange)">{{ undoneChangeIds.includes(selectedChange.id) ? '恢复这处修改' : '撤销这处修改' }}</button></div>
+              </section>
+              <textarea :value="revisedText" class="revision-editor" readonly spellcheck="false" aria-label="完整修改稿"></textarea>
+            </div>
+            <footer class="revision-actions"><span v-if="!canSaveOriginal" class="save-hint">粘贴或拖入的文本只能另存为</span><button class="tool-button" :disabled="!canSaveOriginal || revisionStale" @click="saveOriginalConfirm = true">保存</button><button class="tool-button" @click="saveRevisionAs">另存为</button><button class="tool-button primary" :disabled="revisionStale" @click="applyRevision">应用到编辑区</button></footer>
           </template>
         </section>
       </aside>
@@ -534,6 +619,16 @@ function actionName(action) {
         <code>{{ workspace.selectedPath }}</code>
         <ul><li>写入前会校验文件是否被其他程序修改</li><li>只有本次明确确认后才会写入</li><li>建议工作区同时使用 Git 或其他版本管理</li></ul>
         <div class="modal-actions"><button class="tool-button" @click="workspaceWriteConfirm = false">取消</button><button class="tool-button primary" @click="writeWorkspaceFile">确认写回</button></div>
+      </section>
+    </div>
+
+    <div v-if="saveOriginalConfirm" class="modal-backdrop" @click.self="saveOriginalConfirm = false">
+      <section class="modal-card">
+        <h2>保存到原文件</h2>
+        <p>这会用当前修改稿替换以下文件：</p>
+        <code>{{ filePath }}</code>
+        <ul><li>已撤销的修改不会写入</li><li>写入前会校验文件是否被其他程序修改</li><li>该操作会覆盖原文件，建议使用 Git 或保留备份</li></ul>
+        <div class="modal-actions"><button class="tool-button" @click="saveOriginalConfirm = false">取消</button><button class="tool-button primary" @click="saveToOriginal">确认保存</button></div>
       </section>
     </div>
   </main>
