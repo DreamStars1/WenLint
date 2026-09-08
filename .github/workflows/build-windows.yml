@@ -1,4 +1,4 @@
-name: build-windows
+name: build-desktop
 
 on:
   workflow_dispatch:
@@ -7,19 +7,39 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
 
 jobs:
   build:
-    runs-on: windows-latest
+    name: ${{ matrix.artifact }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            architecture: x64
+            artifact: WenLint-windows-x64
+          - os: macos-15
+            architecture: arm64
+            artifact: WenLint-macos-arm64
+          - os: macos-15-intel
+            architecture: x64
+            artifact: WenLint-macos-x64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          architecture: ${{ matrix.architecture }}
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: 10.15.1
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -27,29 +47,68 @@ jobs:
           cache-dependency-path: desktop-ui/pnpm-lock.yaml
       - run: python -m pip install -e ".[test,desktop-build]"
       - run: python -m pytest -q --basetemp=.pytest-basetemp-ci
-      - name: Build single-file desktop app
+      - run: python demo/verify_demo.py
+      - name: Build and test frontend
+        working-directory: desktop-ui
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm test
+          pnpm run build
+      - name: Build Windows portable app
+        if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/build-windows.ps1 -Python python
-      - name: Smoke test packaged executable
+        run: ./scripts/build-windows.ps1 -Python python -SkipFrontend
+      - name: Smoke test and archive Windows app
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $process = Start-Process -FilePath ./dist/WenLint.exe -ArgumentList "--self-test" -Wait -PassThru -WindowStyle Hidden
+          $process = Start-Process -FilePath ./dist/WenLint/WenLint.exe -ArgumentList "--self-test" -Wait -PassThru -WindowStyle Hidden
           if ($process.ExitCode -ne 0) { throw "Desktop smoke test failed" }
-      - name: Write checksum
-        shell: pwsh
+          Compress-Archive -Path ./dist/WenLint -DestinationPath ./dist/${{ matrix.artifact }}.zip -Force
+      - name: Build, smoke test and archive macOS app
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          PYTHON: python
         run: |
-          $hash = (Get-FileHash ./dist/WenLint.exe -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  WenLint.exe" | Set-Content -Encoding ascii ./dist/WenLint.exe.sha256
+          bash scripts/build-macos.sh --skip-frontend
+          dist/WenLint.app/Contents/MacOS/WenLint --self-test
+          ditto -c -k --sequesterRsrc --keepParent dist/WenLint.app dist/${{ matrix.artifact }}.zip
+      - name: Write checksum and dependency inventory
+        shell: bash
+        env:
+          ARTIFACT_NAME: ${{ matrix.artifact }}
+        run: |
+          python scripts/package-manifest.py "dist/$ARTIFACT_NAME.zip"
       - uses: actions/upload-artifact@v4
         with:
-          name: WenLint-windows-x64
+          name: ${{ matrix.artifact }}
           path: |
-            dist/WenLint.exe
-            dist/WenLint.exe.sha256
+            dist/${{ matrix.artifact }}.zip
+            dist/${{ matrix.artifact }}.zip.sha256
+            dist/${{ matrix.artifact }}.build.json
           if-no-files-found: error
-      - name: Publish tagged release
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
+          retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: WenLint-*
+          path: release
+          merge-multiple: true
+      - name: Publish all platforms together
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$env:GITHUB_REF_NAME" ./dist/WenLint.exe ./dist/WenLint.exe.sha256 --generate-notes --verify-tag
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" release/* --generate-notes --verify-tag
+          fi

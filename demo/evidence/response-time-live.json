@@ -1,0 +1,21 @@
+{
+  "mode": "live",
+  "static_median_ms": 0.1,
+  "static_p95_ms": 0.3,
+  "start_ms": 1.33,
+  "first_event_ms": 1.35,
+  "first_model_output_ms": 1137,
+  "complete_ms": 2317.0,
+  "state": "complete",
+  "model_calls": 2,
+  "decisions": 2,
+  "events": 32,
+  "error": null,
+  "thresholds": {
+    "static_p95_ms": 100,
+    "start_ms": 200,
+    "first_event_ms": 250,
+    "complete_ms": 30000
+  },
+  "passed": true
+}

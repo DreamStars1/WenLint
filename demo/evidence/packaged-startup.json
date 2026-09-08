@@ -1,0 +1,15 @@
+{
+  "metric": "process startup plus --self-test; excludes GUI render",
+  "samples_ms": {
+    "old_onefile": [
+      2151.41,
+      2681.69,
+      2602.91
+    ],
+    "new_onedir": [
+      1014.54,
+      942.84,
+      926.72
+    ]
+  }
+}

@@ -25,31 +25,40 @@ python -m pip install -e ".[test]"   # 开发：可编辑安装 + pytest
 # 或直接运行： python -m wenlint <path>
 ```
 
-### Windows 桌面版（Vue）
+### Windows / macOS 桌面版（Vue）
 
-面向不使用命令行的用户，桌面版提供完整工作台：打开或拖入 UTF-8 文本、关联一个本地工作区、选择检查场景、本地静态检查、填写 OpenAI-compatible `Base URL` / `API Key` / 模型名称，再由内置 Agent 并发执行“静态候选裁决”和“全文独立发现”并生成修改稿。通过 Python 安装桌面命令时请使用 `python -m pip install ".[desktop]"`；发布的 EXE 已内置运行环境。
+面向不使用命令行的用户，桌面版提供完整工作台：打开或拖入 UTF-8 文本、关联一个本地工作区、选择检查场景、本地静态检查、填写 OpenAI-compatible `Base URL` / `API Key` / 模型名称，再由内置 Agent 并发执行“静态候选裁决”和“全文独立发现”并生成修改稿。通过 Python 安装桌面命令时请使用 `python -m pip install ".[desktop]"`；发布的应用包已内置运行环境。
 
-- 双击 `WenLint.exe` 即可启动，无需单独安装 Python 或 Node。
+- Windows 完整解压后打开 `WenLint/WenLint.exe`；Mac 解压后打开 `WenLint.app`，无需单独安装 Python 或 Node。
 - API Key 只保存在当前进程内存中，不写配置文件或日志。
-- 点击 Agent 审查前会明确提示正文以及可选的工作区文件索引即将发送到哪个模型服务；其他文件正文不会自动发送。
+- 点击 Agent 审查前会明确提示将正文发送到哪个模型服务；启用工作区查证后，Agent 可以按需搜索和读取相关文本片段，工具参数与结果在过程面板中可展开查看。
 - “尚未复核”“复核失败”“已完成但无改动”使用不同状态，完成时间、耗时和模型调用数会在结果区显示。
 - 工作区只索引支持的文本文件，忽略版本库、依赖和构建目录；用户可逐个打开文件并审查。
-- 修改稿会逐条解释修改原因，可检查原文上下文并撤销或恢复单项改写；“全文核对”会同步展示最终稿。
+- 改写默认逐条待确认；只有“采纳建议”的改动进入修改稿，可保留原文、撤销决定并核对全文。
+- Agent 的计划、工具调用、工具结果和决策依据实时可见，支持取消；展示可审核的摘要，不记录模型内部思维链。
 - “保存”经再次确认后覆盖原文件，“另存为”创建新文件，“应用到编辑区”只更新当前编辑内容。覆盖前会校验文件未被外部修改。
 
-当前仓库的 Release 尚未发布预编译文件。开发者可在 Windows 上构建：
+预编译应用可通过 `build-desktop` Actions 工作流生成，下载以实际成功的 Actions / Release 为准。开发者可在 Windows 上构建：
 
 ```powershell
 python -m pip install -e ".[test,desktop-build]"
 ./scripts/build-windows.ps1 -Python python
-# 输出：dist/WenLint.exe
+# 输出：dist/WenLint/WenLint.exe（保留整个目录）
 ```
 
-标签 `v*` 或手动触发 `build-windows` 工作流时，CI 会运行完整测试、构建单文件 EXE、做无界面 smoke test，并上传 `WenLint-windows-x64` artifact 与 SHA-256；标签构建还会自动创建 GitHub Release。
+标签 `v*` 或手动触发 `build-desktop` 工作流时，CI 在 Windows x64、macOS arm64 和 macOS x64 原生环境分别运行测试、构建目录应用并做无界面 smoke test，上传 ZIP、SHA-256 和依赖清单；标签构建在全部平台成功后统一发布 GitHub Release。Windows 目录分发减少单文件反复解包的启动开销。Mac 本地可运行 `bash scripts/build-macos.sh`。当前构建未使用发布者签名或 Apple 公证，首次启动可能需要系统批准；详见 [分发说明](docs/competition/DISTRIBUTION.md)。
 
 ### 演示材料
 
+无需密钥，打开桌面应用后点击“体验示例”。也可运行 `python -m wenlint.browser_demo`，在浏览器打开 `http://127.0.0.1:8765`；浏览器入口仅运行明确标注的离线模拟，不调用模型。
+
+性能与知识查证记录见 [验收记录](docs/competition/VALIDATION.md)。真实 DeepSeek V4 Flash 短句审查一次实测 2.32 秒；带工作区证据检索的虚构事实核对一次实测 8.48 秒。单次结果不代表长文或所有网络环境。
+
 仓库内置了可重复验证的 [桌面版演示包](demo/README.md)，包含故意保留问题的待审查文档、多文件工作区、事实基线、静态结果快照、参考修改稿和人工验收清单。在仓库根目录运行 `python demo/verify_demo.py` 可验证材料未漂移。
+
+### 参赛材料
+
+本项目面向 [2026 上海开源软件应用创新大赛](https://www.oschina.net/os2026/) 准备，建议选报开源 AI 工具赛道。仓库内提供 [项目介绍、架构、治理、验证与交付索引](docs/competition/README.md)；报名、邮件提交和视频由参赛人完成。
 
 ### Codex Skill（npx skills）
 
@@ -268,7 +277,7 @@ wenlint/
 │   └── __init__.py      # 版本
 ├── tests/               # pytest 回归（本地 + 飞书）
 ├── desktop-ui/          # Vue 3 + Vite 桌面界面
-├── scripts/             # Windows 单文件 EXE 构建入口
+├── scripts/             # Windows / macOS 原生应用构建入口
 ├── pyproject.toml       # packaging（含 wenlint-desktop）
 ├── LICENSE              # MIT
 └── README.md

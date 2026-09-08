@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   buildRevision,
+  buildApprovedRevision,
   changeContext,
   orderChanges,
   resolveSaveTarget,
@@ -12,6 +13,24 @@ const changes = [
   { id: 2, before: '仍然需要复核', after: '该结论需要复核' },
   { id: 5, before: '之后再发布', after: '复核通过后发布' },
 ]
+
+test('new proposals remain pending and do not change the document', () => {
+  const source = '文档仍然需要复核，之后再发布。'
+  assert.equal(buildApprovedRevision(source, changes), source)
+  assert.equal(buildApprovedRevision(source, changes, { 2: 'rejected' }), source)
+})
+
+test('only explicitly accepted proposals enter the saved revision', () => {
+  const source = '文档仍然需要复核，之后再发布。'
+  assert.equal(buildApprovedRevision(source, changes, { 2: 'accepted', 5: 'rejected' }), '文档该结论需要复核，之后再发布。')
+  assert.equal(buildApprovedRevision(source, changes, { 2: 'accepted' }), '文档该结论需要复核，之后再发布。')
+  assert.equal(buildApprovedRevision(source, changes, {}), source)
+})
+
+test('accepted proposals must have unique, non-overlapping anchors', () => {
+  assert.throws(() => buildApprovedRevision('重复重复', [{ id: 1, before: '重复', after: '新文' }], { 1: 'accepted' }), /唯一定位/)
+  assert.throws(() => buildApprovedRevision('甲乙丙', [{ id: 1, before: '甲乙', after: '一' }, { id: 2, before: '乙丙', after: '二' }], { 1: 'accepted', 2: 'accepted' }), /重叠/)
+})
 
 test('buildRevision applies active changes and restores an undone change', () => {
   const source = '文档仍然需要复核，之后再发布。'

@@ -20,6 +20,11 @@ export function buildRevision(source, changes, undoneIds) {
   )
 }
 
+// No proposal changes the document until the user explicitly accepts it.
+export function buildApprovedRevision(source, changes, choices = {}) {
+  return buildRevision(source, changes.filter((item) => choices[item.id] === 'accepted'), new Set())
+}
+
 export function orderChanges(source, changes) {
   return changes
     .map((item) => {

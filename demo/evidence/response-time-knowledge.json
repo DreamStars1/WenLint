@@ -1,0 +1,50 @@
+{
+  "mode": "live",
+  "static_median_ms": 0.13,
+  "static_p95_ms": 0.27,
+  "start_ms": 1.23,
+  "first_event_ms": 1.25,
+  "first_model_output_ms": 2272,
+  "complete_ms": 8478.02,
+  "state": "complete",
+  "model_calls": 3,
+  "decisions": 2,
+  "events": 70,
+  "error": null,
+  "tools": [
+    "search_workspace_text",
+    "search_workspace_text",
+    "read_workspace_file",
+    "read_workspace_file",
+    "read_workspace_file"
+  ],
+  "thresholds": {
+    "static_p95_ms": 100,
+    "start_ms": 200,
+    "first_event_ms": 250,
+    "complete_ms": 30000
+  },
+  "passed": true,
+  "review_decisions": [
+    {
+      "finding_index": null,
+      "rule": "SEMANTIC_FACTUAL_CONFLICT",
+      "action": "VERIFY",
+      "reason": "文档称登录超时为 30 秒，但 evidence/product-baseline.md 第 6 行记录为 20 秒，且 review-me.md 第 9 行明确说明已由 30 秒改为 20 秒。该数值与权威基线冲突，需作者确认正确值。",
+      "before": "Aurora Desktop 2.4.0 的登录超时为 30 秒",
+      "after": "",
+      "origin": "semantic",
+      "related_finding_indexes": []
+    },
+    {
+      "finding_index": null,
+      "rule": "SEMANTIC_FACTUAL_CONFLICT",
+      "action": "VERIFY",
+      "reason": "文档称最低支持 Windows 10，但 evidence/product-baseline.md 第 5 行记录最低支持平台为 Windows 11 23H2；而 review-me.md 第 13 行又写“系统仍然支持 Windows 10”，工作区内部说法不一致，无法据此可靠改写，需作者澄清。",
+      "before": "最低支持 Windows 10",
+      "after": "",
+      "origin": "semantic",
+      "related_finding_indexes": []
+    }
+  ]
+}

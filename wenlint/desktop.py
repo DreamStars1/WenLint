@@ -16,6 +16,8 @@ from .agent import AgentConfig, AgentError, MAX_TEXT_CHARS, OpenAICompatibleAgen
 from .profiles import PROFILES
 from .scanner import scan_text
 from .workspace import WorkspaceError, WorkspaceSession, write_checked_file
+from .workspace_agent import WorkspaceAgentAccess
+from .review_jobs import ReviewJobs
 
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -46,6 +48,7 @@ class DesktopApi:
         self._window: Any | None = None
         self._workspace: WorkspaceSession | None = None
         self._opened_file: OpenedFile | None = None
+        self._review_jobs = ReviewJobs()
 
     def attach_window(self, window: Any) -> None:
         self._window = window
@@ -178,7 +181,21 @@ class DesktopApi:
         except Exception as exc:
             return _failure(f"静态检查失败（{type(exc).__name__}）")
 
-    def agent_review(self, payload: object) -> dict[str, object]:
+    def start_agent_review(self, payload: object) -> dict[str, object]:
+        if not isinstance(payload, dict):
+            return _failure('请求格式无效')
+        snapshot = dict(payload)
+        return self._review_jobs.start(
+            lambda emit, cancel: self.agent_review(snapshot, on_event=emit, cancel_event=cancel)
+        )
+
+    def agent_review_status(self, payload: object) -> dict[str, object]:
+        return self._review_jobs.status(payload)
+
+    def cancel_agent_review(self, payload: object) -> dict[str, object]:
+        return self._review_jobs.cancel(payload)
+
+    def agent_review(self, payload: object, *, on_event=None, cancel_event=None) -> dict[str, object]:
         """Call the configured endpoint; secrets are neither returned nor persisted."""
 
         if not isinstance(payload, dict):
@@ -186,24 +203,37 @@ class DesktopApi:
         try:
             started = perf_counter()
             text, profile, filename = _document_request(payload)
+            if payload.get('demo') is True:
+                from .offline_demo import review_demo
+                return review_demo(text, profile, filename, on_event, cancel_event)
             config = AgentConfig(
                 base_url=_required_string(payload, "baseUrl", "Base URL"),
                 api_key=_required_string(payload, "apiKey", "API Key"),
                 model=_required_string(payload, "model", "模型名称"),
             )
             workspace_context = ""
+            workspace_access = None
             workspace_path = payload.get("workspacePath")
             if workspace_path:
                 if self._workspace is None:
                     raise ValueError("当前文件关联的工作区已经断开")
                 if not isinstance(workspace_path, str):
                     raise ValueError("工作区文件路径无效")
-                workspace_context = self._workspace.review_context(workspace_path)
+                if payload.get('use_workspace_tools') is True:
+                    workspace_access = WorkspaceAgentAccess(self._workspace, workspace_path)
+                else:
+                    workspace_context = self._workspace.review_context(workspace_path)
+            options = {}
+            if on_event is not None:
+                options.update(on_event=on_event, cancel_event=cancel_event)
+            if workspace_access is not None:
+                options['workspace_access'] = workspace_access
             review = OpenAICompatibleAgent(config).review(
                 text,
                 profile=profile,
                 filename=filename,
                 workspace_context=workspace_context,
+                **options,
             )
             return {
                 "ok": True,
