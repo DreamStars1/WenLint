@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import sys
 from types import SimpleNamespace
 
@@ -104,6 +105,18 @@ def test_save_original_requires_confirmation_and_rejects_external_change(
     assert unconfirmed["ok"] is False and "确认" in unconfirmed["error"]
     assert conflicted["ok"] is False and "其他程序修改" in conflicted["error"]
     assert target.read_text(encoding="utf-8") == "外部修改"
+
+
+def test_save_original_preserves_utf8_bom(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "draft.md"
+    target.write_bytes(codecs.BOM_UTF8 + "原文".encode())
+    api = DesktopApi()
+    _open_standalone_file(api, target, monkeypatch)
+
+    result = api.save_original({"text": "修改稿", "confirmed": True})
+
+    assert result["ok"] is True
+    assert target.read_bytes() == codecs.BOM_UTF8 + "修改稿".encode()
 
 
 def test_agent_review_reports_completed_state_even_without_changes(monkeypatch) -> None:

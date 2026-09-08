@@ -7,6 +7,7 @@ symlinks, and uses an optimistic content hash before replacing a file.
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import os
 import stat
@@ -208,7 +209,8 @@ def write_checked_file(
     if hashlib.sha256(current).hexdigest() != expected_sha256:
         raise WorkspaceError("文件已被其他程序修改，请重新打开后再保存")
 
-    encoded = text.encode("utf-8")
+    bom = codecs.BOM_UTF8 if current.startswith(codecs.BOM_UTF8) else b""
+    encoded = bom + text.encode("utf-8")
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(

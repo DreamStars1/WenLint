@@ -219,6 +219,7 @@ button { color: inherit; }
 .context-heading > div:first-child { display: flex; align-items: baseline; gap: 7px; }
 .context-heading strong { font-size: 12px; }
 .context-heading span { color: var(--muted); font-size: 10px; }
+.context-heading em { padding: 1px 5px; border-radius: 4px; color: #705322; background: #f5ead8; font-size: 9px; font-style: normal; font-weight: 600; }
 .context-heading > div:last-child { display: flex; gap: 4px; }
 .context-heading button { min-width: 29px; font-size: 13px; }
 .context-reason { display: flex; gap: 8px; margin: 9px 0; color: #4d463d; font-size: 11px; line-height: 1.55; }

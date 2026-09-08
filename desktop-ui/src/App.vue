@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { buildRevision, changeContext } from './revision.js'
+import { buildRevision, changeContext, orderChanges, resolveSaveTarget } from './revision.js'
 
 const sourceText = ref('')
 const filename = ref('未命名文档.md')
@@ -66,9 +66,12 @@ const profileNames = {
 const characterCount = computed(() => sourceText.value.length)
 const selectedFinding = computed(() => findings.value[selectedFindingIndex.value] || null)
 const selectedDecision = computed(() => decisions.value[selectedDecisionIndex.value] || null)
-const rewriteChanges = computed(() => decisions.value
-  .map((item, id) => ({ ...item, id }))
-  .filter((item) => item.action === 'REWRITE'))
+const rewriteChanges = computed(() => orderChanges(
+  reviewSource.value,
+  decisions.value
+    .map((item, id) => ({ ...item, id }))
+    .filter((item) => item.action === 'REWRITE'),
+))
 const rewriteDecisions = computed(() => rewriteChanges.value)
 const activeRewriteChanges = computed(() => {
   const undone = new Set(undoneChangeIds.value)
@@ -87,7 +90,12 @@ const reviewIsStale = computed(
     && (sourceText.value !== reviewSource.value || config.profile !== reviewProfile.value),
 )
 const revisionStale = computed(() => hasRevision.value && reviewIsStale.value)
-const canSaveOriginal = computed(() => Boolean(workspace.selectedPath || standaloneSha256.value))
+const saveTarget = computed(() => resolveSaveTarget(
+  workspace.selectedPath,
+  workspace.selectedSha256,
+  standaloneSha256.value,
+))
+const canSaveOriginal = computed(() => saveTarget.value !== null)
 const workspaceDirty = computed(
   () => workspace.selectedPath && sourceText.value !== workspace.loadedText,
 )
@@ -439,14 +447,15 @@ async function saveToOriginal() {
   saveOriginalConfirm.value = false
   if (!canSaveOriginal.value || revisionStale.value || !hasRevision.value) return
   try {
-    const result = workspace.selectedPath
-      ? await callApi('workspace_write', {
-        path: workspace.selectedPath,
+    const target = saveTarget.value
+    const result = target.method === 'workspace_write'
+      ? await callApi(target.method, {
+        path: target.path,
         text: revisedText.value,
-        expectedSha256: workspace.selectedSha256,
+        expectedSha256: target.expectedSha256,
         confirmed: true,
       })
-      : await callApi('save_original', { text: revisedText.value, confirmed: true })
+      : await callApi(target.method, { text: revisedText.value, confirmed: true })
     if (!result.ok) throw new Error(result.error)
     if (workspace.selectedPath) workspace.selectedSha256 = result.sha256
     else standaloneSha256.value = result.sha256
@@ -585,7 +594,7 @@ function actionName(action) {
             </div>
             <div v-else class="full-review">
               <section v-if="selectedChange && selectedChangeContext" class="context-inspector">
-                <div class="context-heading"><div><strong>变更 {{ selectedChangeIndex + 1 }} / {{ rewriteChanges.length }}</strong><span>{{ selectedChange.rule }}</span></div><div><button title="上一处" @click="selectRelativeChange(-1)">←</button><button title="下一处" @click="selectRelativeChange(1)">→</button></div></div>
+                <div class="context-heading"><div><strong>变更 {{ selectedChangeIndex + 1 }} / {{ rewriteChanges.length }}</strong><span>{{ selectedChange.rule }}</span><em v-if="selectedChange.origin === 'semantic'">模型新发现</em></div><div><button title="上一处" @click="selectRelativeChange(-1)">←</button><button title="下一处" @click="selectRelativeChange(1)">→</button></div></div>
                 <p class="context-reason"><strong>修改原因</strong>{{ selectedChange.reason }}</p>
                 <div class="context-quote"><span>{{ selectedChangeContext.before }}</span><mark>{{ selectedChangeContext.focus }}</mark><span>{{ selectedChangeContext.after }}</span></div>
                 <div class="context-proposal"><span>建议改为</span><p>{{ selectedChange.after }}</p><button class="undo-button" @click="toggleChange(selectedChange)">{{ undoneChangeIds.includes(selectedChange.id) ? '恢复这处修改' : '撤销这处修改' }}</button></div>

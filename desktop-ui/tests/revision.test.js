@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildRevision, changeContext } from '../src/revision.js'
+import {
+  buildRevision,
+  changeContext,
+  orderChanges,
+  resolveSaveTarget,
+} from '../src/revision.js'
 
 const changes = [
   { id: 2, before: '仍然需要复核', after: '该结论需要复核' },
@@ -38,4 +43,24 @@ test('changeContext returns nearby original text around one change', () => {
   assert.equal(context.focus, '仍然需要复核')
   assert.ok(context.before.endsWith('。这里'))
   assert.ok(context.after.startsWith('。后续'))
+})
+
+test('orderChanges follows document order while preserving stable ids', () => {
+  const source = '甲需要修改，乙也需要修改。'
+  const unordered = [
+    { id: 5, before: '乙也需要修改' },
+    { id: 2, before: '甲需要修改' },
+  ]
+
+  assert.deepEqual(orderChanges(source, unordered).map((item) => item.id), [2, 5])
+})
+
+test('resolveSaveTarget separates workspace, opened file, and transient text', () => {
+  assert.deepEqual(resolveSaveTarget('docs/a.md', 'workspace-hash', 'file-hash'), {
+    method: 'workspace_write',
+    path: 'docs/a.md',
+    expectedSha256: 'workspace-hash',
+  })
+  assert.deepEqual(resolveSaveTarget('', '', 'file-hash'), { method: 'save_original' })
+  assert.equal(resolveSaveTarget('', '', ''), null)
 })

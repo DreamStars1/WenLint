@@ -1,13 +1,11 @@
 export function buildRevision(source, changes, undoneIds) {
-  const replacements = changes
+  const replacements = orderChanges(source, changes)
     .filter((item) => !undoneIds.has(item.id))
-    .map((item) => {
-      const start = source.indexOf(item.before)
-      if (start < 0 || start !== source.lastIndexOf(item.before)) {
-        throw new Error('修改位置无法在原文中唯一定位')
-      }
-      return { start, end: start + item.before.length, after: item.after }
-    })
+    .map((item) => ({
+      start: source.indexOf(item.before),
+      end: source.indexOf(item.before) + item.before.length,
+      after: item.after,
+    }))
     .sort((left, right) => right.start - left.start)
 
   for (let index = 0; index < replacements.length - 1; index += 1) {
@@ -22,6 +20,19 @@ export function buildRevision(source, changes, undoneIds) {
   )
 }
 
+export function orderChanges(source, changes) {
+  return changes
+    .map((item) => {
+      const start = source.indexOf(item.before)
+      if (start < 0 || start !== source.lastIndexOf(item.before)) {
+        throw new Error('修改位置无法在原文中唯一定位')
+      }
+      return { item, start }
+    })
+    .sort((left, right) => left.start - right.start)
+    .map(({ item }) => item)
+}
+
 export function changeContext(source, before, radius = 70) {
   const start = source.indexOf(before)
   if (start < 0) return { before: '', focus: before, after: '' }
@@ -31,4 +42,16 @@ export function changeContext(source, before, radius = 70) {
     focus: source.slice(start, end),
     after: source.slice(end, Math.min(source.length, end + radius)),
   }
+}
+
+export function resolveSaveTarget(workspacePath, workspaceSha256, standaloneSha256) {
+  if (workspacePath) {
+    return {
+      method: 'workspace_write',
+      path: workspacePath,
+      expectedSha256: workspaceSha256,
+    }
+  }
+  if (standaloneSha256) return { method: 'save_original' }
+  return null
 }
