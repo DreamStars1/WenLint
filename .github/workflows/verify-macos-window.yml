@@ -1,0 +1,51 @@
+name: verify-macos-window
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release to launch without model calls
+        required: true
+        default: v0.6.1
+
+permissions:
+  contents: read
+
+jobs:
+  window:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            architecture: arm64
+          - os: macos-15-intel
+            architecture: x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install pyobjc-framework-Quartz
+      - name: Download and verify published app
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          ARCH: ${{ matrix.architecture }}
+        run: |
+          gh release download "$RELEASE_TAG" --pattern "WenLint-macos-$ARCH.zip*" --dir download
+          cd download
+          shasum -a 256 -c "WenLint-macos-$ARCH.zip.sha256"
+          ditto -x -k "WenLint-macos-$ARCH.zip" app
+      - name: Launch real application and capture its window
+        run: python scripts/verify-macos-window.py download/app/WenLint.app window-evidence
+      - uses: actions/upload-artifact@v7.0.1
+        if: always()
+        with:
+          name: macos-window-${{ matrix.architecture }}
+          path: window-evidence/
+          if-no-files-found: error
+          retention-days: 30
