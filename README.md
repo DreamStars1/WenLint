@@ -47,6 +47,10 @@ python -m pip install -e ".[test,desktop-build]"
 
 标签 `v*` 或手动触发 `build-windows` 工作流时，CI 会运行完整测试、构建单文件 EXE、做无界面 smoke test，并上传 `WenLint-windows-x64` artifact 与 SHA-256；标签构建还会自动创建 GitHub Release。
 
+### 演示材料
+
+仓库内置了可重复验证的 [桌面版演示包](demo/README.md)，包含故意保留问题的待审查文档、多文件工作区、事实基线、静态结果快照、参考修改稿和人工验收清单。在仓库根目录运行 `python demo/verify_demo.py` 可验证材料未漂移。
+
 ### Codex Skill（npx skills）
 
 ```bash

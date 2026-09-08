@@ -1,0 +1,23 @@
+{
+  "profile": "product",
+  "source_sha256": "B013FA5901F236D1019899C5780606C1E13A3363FB35E056E692400C10D9DD31",
+  "findings": [
+    { "rule_id": "C001", "line": 7, "col": 1, "match": "总而言之" },
+    { "rule_id": "C002", "line": 7, "col": 13, "match": "全链路" },
+    { "rule_id": "C002", "line": 7, "col": 18, "match": "赋能" },
+    { "rule_id": "C002", "line": 7, "col": 22, "match": "闭环" },
+    { "rule_id": "E001", "line": 7, "col": 27, "match": "非常" },
+    { "rule_id": "M001", "line": 9, "col": 5, "match": "原先" },
+    { "rule_id": "M001", "line": 9, "col": 14, "match": "经过讨论" },
+    { "rule_id": "M001", "line": 9, "col": 18, "match": "改为" },
+    { "rule_id": "H001", "line": 9, "col": 28, "match": "大概" },
+    { "rule_id": "DOC002", "line": 11, "col": 4, "match": "" },
+    { "rule_id": "M002", "line": 13, "col": 3, "match": "仍然" },
+    { "rule_id": "H002", "line": 13, "col": 25, "match": "可能" },
+    { "rule_id": "M002", "line": 15, "col": 1, "match": "先" },
+    { "rule_id": "M002", "line": 15, "col": 21, "match": "再" },
+    { "rule_id": "R001", "line": 15, "col": 30, "match": "进行" },
+    { "rule_id": "R002", "line": 15, "col": 44, "match": "是否能够" },
+    { "rule_id": "D001", "line": 17, "col": 3, "match": "结果结果" }
+  ]
+}
