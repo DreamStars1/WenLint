@@ -23,6 +23,8 @@ def test_demo_bundle_is_complete_and_self_verifying() -> None:
         DEMO / "verify_demo.py",
     )
     assert all(path.is_file() for path in required)
+    launcher = (DEMO / "start-demo.ps1").read_text(encoding="utf-8")
+    assert "dist-0.5.0-final" not in launcher
 
     result = subprocess.run(
         [sys.executable, "-S", str(DEMO / "verify_demo.py")],

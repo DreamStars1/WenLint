@@ -4,7 +4,7 @@
 
 ## 启动
 
-在本仓库根目录执行 `./demo/start-demo.ps1`。脚本会依次查找随演示包放置的 `WenLint.exe`、仓库根目录下的 EXE、`dist-0.5.0-final/WenLint.exe` 和标准构建目录 `dist/WenLint.exe`，并启动找到的版本。
+在本仓库根目录执行 `./demo/start-demo.ps1`。脚本会优先使用随演示包放置的 `WenLint.exe`；否则从仓库根目录、标准 `dist` 目录和 `dist-*` 构建目录中选择最后更新的 EXE，避免绑定某个版本号。
 
 若这些位置都没有 EXE，请先从项目 Release 下载 Windows 构建并放入 `demo` 目录，或运行 `./scripts/build-windows.ps1` 本地构建。演示材料本身不把大型二进制提交到 Git。
 
