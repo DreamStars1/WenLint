@@ -12,19 +12,20 @@ DEMO = ROOT / "demo"
 def test_demo_bundle_is_complete_and_self_verifying() -> None:
     required = (
         DEMO / "README.md",
+        DEMO / "start-demo.ps1",
         DEMO / "review-me.md",
         DEMO / "workspace" / "review-me.md",
         DEMO / "workspace" / "evidence" / "product-baseline.md",
         DEMO / "workspace" / "evidence" / "acceptance-results.txt",
-            DEMO / "evidence" / "expected-static-findings.json",
-            DEMO / "evidence" / "expected-revision.md",
-            DEMO / "evidence" / "semantic-review-checklist.md",
+        DEMO / "evidence" / "expected-static-findings.json",
+        DEMO / "evidence" / "expected-revision.md",
+        DEMO / "evidence" / "semantic-review-checklist.md",
         DEMO / "verify_demo.py",
     )
     assert all(path.is_file() for path in required)
 
     result = subprocess.run(
-        [sys.executable, str(DEMO / "verify_demo.py")],
+        [sys.executable, "-S", str(DEMO / "verify_demo.py")],
         cwd=ROOT,
         text=True,
         capture_output=True,

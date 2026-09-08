@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from wenlint.scanner import scan_text
 from wenlint.workspace import WorkspaceSession
@@ -64,13 +69,14 @@ def main() -> int:
 
     workspace = WorkspaceSession(WORKSPACE_ROOT)
     indexed_paths = {str(item["path"]) for item in workspace.index()}
-    required_paths = {
+    expected_paths = {
         "review-me.md",
         "evidence/product-baseline.md",
         "evidence/acceptance-results.txt",
     }
-    if not required_paths.issubset(indexed_paths):
-        print("DEMO INVALID: workspace index is incomplete")
+    if indexed_paths != expected_paths:
+        print("DEMO INVALID: workspace index differs from the fixed manifest")
+        print(json.dumps(sorted(indexed_paths), ensure_ascii=False, indent=2))
         return 1
 
     print(
