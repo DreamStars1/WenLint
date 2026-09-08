@@ -25,3 +25,13 @@
 3. **质量与稳定性边界**：本轮仍依赖一次JSON格式修复，部分改写如“各环节协同”仍较抽象。28秒属于单次短demo观测，不代表长文、其他服务或稳定平均值。
 
 已验证0.6.0最终布局、参考资料实际读取、用户确认和LF导出；0.6.1关联修复仅有离线回归。长文真实模型性能、Mac图形界面人工体验仍未执行。
+
+## 0.6.1 Mac发行包窗口启动补充验证
+
+[原生Mac窗口验收](https://github.com/DreamStars1/WenLint/actions/runs/34264484963)在macos-15 arm64和macos-15-intel x64上直接下载0.6.1发行ZIP，校验SHA-256后启动包内实际可执行程序，定位唯一的WenLint应用窗口并截图。没有模型调用，没有配置密钥、输入文档或修改系统权限。两种架构均成功。
+
+主agent已查看截图：标题均为文尺WenLint 0.6.1，中文首页完整显示，示例/打开文档/直接输入按钮可见，底部显示本地服务已连接、模型未配置，无空白页或加载错误。Intel窗口1200×700；Apple芯片runner窗口适配为1024×681。此证据验证真实包的窗口启动与首页渲染，仍不等同于Mac全流程人工体验或签名/公证。
+
+![Intel Mac实际窗口](../../demo/evidence/macos-window-061/macos-window-x64/window.png)
+
+![Apple芯片Mac实际窗口](../../demo/evidence/macos-window-061/macos-window-arm64/window.png)

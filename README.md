@@ -41,7 +41,7 @@ python -m pip install -e ".[test]"   # 开发：可编辑安装 + pytest
 - 参考资料按页读取（默认40行、最多4000字符），长单行有字符续页游标；搜索明确标注预算截断，不把未搜索区域误称为已查。
 - “保存”经再次确认后覆盖原文件，“另存为”创建新文件，“应用到编辑区”只更新当前编辑内容。覆盖前会校验文件未被外部修改。
 
-下载 [v0.6.0 桌面应用](https://github.com/DreamStars1/WenLint/releases/tag/v0.6.0)：提供 Windows x64、Apple 芯片 Mac 和 Intel Mac 三种 ZIP，附校验和与构建清单。开发者可在 Windows 上构建：
+下载 [v0.6.1 桌面应用](https://github.com/DreamStars1/WenLint/releases/tag/v0.6.1)：提供 Windows x64、Apple 芯片 Mac 和 Intel Mac 三种 ZIP，附校验和与构建清单。开发者可在 Windows 上构建：
 
 ```powershell
 python -m pip install -e ".[test,desktop-build]"

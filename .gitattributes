@@ -1,3 +1,5 @@
 # Keep demo byte hashes and shell entry points identical on Windows and macOS.
 demo/** text eol=lf
 *.sh text eol=lf
+# Evidence screenshots must not pass through text newline normalization.
+*.png binary

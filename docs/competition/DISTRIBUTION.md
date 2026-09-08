@@ -2,15 +2,15 @@
 
 ## 获取应用
 
-直接下载 [v0.6.0 Release](https://github.com/DreamStars1/WenLint/releases/tag/v0.6.0) 中对应平台的 ZIP。也可在 GitHub Actions 中手动运行 **build-desktop**（文件名保留为 `build-windows.yml`）生成工件。推送 `v*` 标签时，所有平台测试和构建成功后统一发布到 GitHub Release。
+直接下载 [v0.6.1 Release](https://github.com/DreamStars1/WenLint/releases/tag/v0.6.1) 中对应平台的 ZIP。也可在 GitHub Actions 中手动运行 **build-desktop**（文件名保留为 `build-windows.yml`）生成工件。推送 `v*` 标签时，所有平台测试和构建成功后统一发布到 GitHub Release。
 
-v0.6.0 对应提交 `28d6fc4a24df59d8f2ce74abecc4bf5989df08f2`，已通过 [Windows、macOS arm64/x64原生构建与打包自检](https://github.com/DreamStars1/WenLint/actions/runs/34260777300)，三个 ZIP、三份校验和与三份构建清单均已公开发布。已核对清单中的提交及 SHA-256 与 GitHub 资产摘要一致。
+v0.6.1 对应提交 `459678d83e03c06faa2fb66b85b8a93f8562607b`，已通过 [Windows、macOS arm64/x64原生构建与打包自检](https://github.com/DreamStars1/WenLint/actions/runs/34264065504)，三个 ZIP、三份校验和与三份构建清单均已公开发布。已核对清单中的提交及 SHA-256 与 GitHub 资产摘要一致。
 
 | ZIP | SHA-256 |
 |---|---|
-| `WenLint-windows-x64.zip` | `8ccf8a7bc90b935071b376bf010010245395f1c27dc38fc792095e9448540c41` |
-| `WenLint-macos-arm64.zip` | `0c224fbce91aa8951f66aa495bad56ccba996689bb25591bde4d0a5a49cad678` |
-| `WenLint-macos-x64.zip` | `c65309c60a5f23dc37ddfeff85fbd87e1359014645ddddefb5c0d44f3746636e` |
+| `WenLint-windows-x64.zip` | `d18f1636b6e9d95951712ed9f9e0fcc2ec3c680a9d72acad03ae6379f61e60ef` |
+| `WenLint-macos-arm64.zip` | `5acf9afe87be2652052dfe2ad35c18421aa2d8925bad8aba67be48ff37d8a1ff` |
+| `WenLint-macos-x64.zip` | `3bfe6d553e636321af71120a628f9321d47befe5cf2002f704c405a0254c5a04` |
 
 | 平台 | 构建环境 | 文件 | 启动方式 |
 |---|---|---|---|
@@ -25,6 +25,8 @@ Windows 采用目录分发，减少单文件程序启动时重复解包的成本
 **当前构建未使用发布者代码签名，macOS 未经 Apple 公证**，首次打开可能被系统阻止。请先核对来源和校验值，再按系统提供的批准方式处理；组织设备应遵守其管理员策略。这不影响从源码运行，但签名/公证是正式面向广泛用户发布时仍需完成的工作。macOS 包必须由 Mac runner 实际构建成功后才可宣称可下载；Windows 开发机不能验证原生 Mac 窗口。
 
 ## 本地构建
+
+0.6.1两种Mac发行包还通过了[实际窗口启动验收](https://github.com/DreamStars1/WenLint/actions/runs/34264484963)，截图已经目视核对，见[窗口证据](FINAL_DESKTOP_REVIEW.md)。验证了原生应用首页完整渲染；完整Mac交互流程仍未人工验收。
 
 需要 Python 3.13、Node.js 22 和 pnpm 10.15.1。先在虚拟环境安装 `python -m pip install -e ".[test,desktop-build]"`。
 

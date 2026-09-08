@@ -10,7 +10,7 @@
 - Apple芯片Mac：解压 `WenLint-macos-arm64.zip`，打开 `WenLint.app`。
 - Intel Mac：解压 `WenLint-macos-x64.zip`，打开 `WenLint.app`。
 
-无需另装Python或Node。各包附校验和与构建清单；未提供发布者签名或Apple公证，Mac图形界面尚未人工验收。
+无需另装Python或Node。各包附校验和与构建清单；未提供发布者签名或Apple公证，两种Mac架构的实际发行包均已启动并取得正常首页截图，完整Mac交互流程尚未人工验收。
 
 ## 实测边界
 

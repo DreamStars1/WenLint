@@ -8,7 +8,7 @@
 
 | 材料 | 本仓库对应内容 | 状态 |
 |---|---|---|
-| 可运行开源代码 | [主 README](../../README.md)、[分发说明](DISTRIBUTION.md) | 源代码已推送；[v0.6.0](https://github.com/DreamStars1/WenLint/releases/tag/v0.6.0) 已发布Windows及两种Mac架构应用 |
+| 可运行开源代码 | [主 README](../../README.md)、[分发说明](DISTRIBUTION.md) | 源代码已推送；[v0.6.1](https://github.com/DreamStars1/WenLint/releases/tag/v0.6.1) 已发布Windows及两种Mac架构应用 |
 | 项目背景、架构、场景与创新点 | [PROJECT.md](PROJECT.md) | 可提交的 Markdown 正文，必要时导出为 PDF |
 | 可复现验证 | [VALIDATION.md](VALIDATION.md)、[demo](../../demo/README.md) | 运行方法与验收标准已提供，结果只记录实际执行证据 |
 | 开源及依赖说明 | [GOVERNANCE.md](GOVERNANCE.md)、[MIT](../../LICENSE)、构建清单 | 已提供治理方式与依赖边界 |
