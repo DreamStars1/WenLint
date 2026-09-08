@@ -283,6 +283,69 @@ def test_review_merges_related_semantic_reason_into_static_match() -> None:
     assert result.semantic_issue_count == 0
 
 
+@pytest.mark.parametrize("quote_full_document", [False, True])
+def test_review_does_not_attach_evidence_to_wrong_adjacent_finding(quote_full_document: bool) -> None:
+    source = "计划大概明日发布。\n系统仍然支持 Windows 10。"
+
+    def opener(request: object, *, timeout: float) -> FakeResponse:
+        if _request_lane(request) == "static":
+            decisions = [
+                {"finding_index": 1, "rule": "H001", "action": "ASK",
+                 "reason": "请确认发布日期。", "before": source if quote_full_document else "大概", "after": ""},
+                {"finding_index": 2, "rule": "M002", "action": "ASK",
+                 "reason": "请核实支持平台。", "before": "仍然", "after": ""},
+            ]
+        else:
+            decisions = [{"finding_index": None, "related_finding_indexes": [1],
+                          "rule": "SEMANTIC_PLATFORM", "action": "REWRITE",
+                          "reason": "基线只支持 Windows 11。",
+                          "before": "系统仍然支持 Windows 10。",
+                          "after": "系统支持 Windows 11。"}]
+        return FakeResponse(_response(json.dumps({"summary": "已核对。", "decisions": decisions})))
+
+    result = OpenAICompatibleAgent(
+        AgentConfig("https://api.example.com/v1", "key", "model"), opener=opener
+    ).review(source)
+    date = next(item for item in result.decisions if item.finding_index == 1)
+    assert date.reason == "请确认发布日期。"
+    platform = next(item for item in result.decisions if item.rule == "SEMANTIC_PLATFORM")
+    assert platform.related_finding_indexes == ()
+    assert platform.before == "系统仍然支持 Windows 10。"
+    assert result.revised_text == "计划大概明日发布。\n系统支持 Windows 11。"
+
+
+@pytest.mark.parametrize("related", [[1], [1, 2]])
+def test_related_links_require_unique_source_and_only_keep_verified_indexes(related: list[int]) -> None:
+    source = "仍然需要复核。\n仍然需要复核。" if related == [1] else "大概明日发布。\n仍然需要复核。"
+
+    def opener(request: object, *, timeout: float) -> FakeResponse:
+        payload = json.loads(request.data.decode())
+        task = json.loads(payload["messages"][1]["content"].split("\n", 1)[1])
+        findings = task.get("static_findings", task.get("covered_static_findings"))
+        assert [item["finding_index"] for item in findings] == [1, 2]
+        if task["review_lane"] == "static":
+            decisions = [{"finding_index": i, "rule": finding["rule_id"], "action": "KEEP",
+                          "reason": "原判断。", "before": source, "after": ""}
+                         for i, finding in enumerate(findings, 1)]
+        else:
+            decisions = [{"finding_index": None, "related_finding_indexes": related,
+                          "rule": "SEMANTIC_EVIDENCE", "action": "VERIFY",
+                          "reason": "请查阅依据。", "before": "仍然需要复核。", "after": ""}]
+        return FakeResponse(_response(json.dumps({"summary": "已核对。", "decisions": decisions})))
+
+    result = OpenAICompatibleAgent(
+        AgentConfig("https://api.example.com/v1", "key", "model"), opener=opener
+    ).review(source)
+    assert result.decisions[0].reason == "原判断。"
+    if related == [1]:
+        assert result.decisions[1].reason == "原判断。"
+        assert result.decisions[2].related_finding_indexes == ()
+    else:
+        assert len(result.decisions) == 2
+        assert "请查阅依据。" in result.decisions[1].reason
+    assert result.revised_text == source
+
+
 def test_review_merges_related_larger_span_without_counting_a_new_issue() -> None:
     def opener(request: object, *, timeout: float) -> FakeResponse:
         if _request_lane(request) == "static":

@@ -326,7 +326,7 @@ class OpenAICompatibleAgent:
         static_decisions = results_by_lane.get(ReviewLane.STATIC, ("", []))[1]
         semantic_decisions = results_by_lane[ReviewLane.SEMANTIC][1]
         static_decisions, semantic_decisions = _merge_related_semantic_decisions(
-            static_decisions, semantic_decisions
+            static_decisions, semantic_decisions, source=text, findings=findings
         )
         decisions = _resolve_rewrite_conflicts(text, static_decisions, semantic_decisions)
         revised_text = _derive_revision(text, decisions)
@@ -354,11 +354,12 @@ class OpenAICompatibleAgent:
             "profile": profile,
             "document": text,
         }
+        numbered_findings = [dict(item, finding_index=index) for index, item in enumerate(findings, 1)]
         if lane is ReviewLane.STATIC:
-            task["static_findings"] = findings
+            task["static_findings"] = numbered_findings
             system_prompt = STATIC_REVIEW_PROMPT
         else:
-            task["covered_static_findings"] = findings
+            task["covered_static_findings"] = numbered_findings
             if workspace_context:
                 task["workspace_context"] = workspace_context
             system_prompt = SEMANTIC_REVIEW_PROMPT
@@ -757,6 +758,9 @@ def _validate_finding_coverage(
 def _merge_related_semantic_decisions(
     static_decisions: list[ReviewDecision],
     semantic_decisions: list[ReviewDecision],
+    *,
+    source: str,
+    findings: list[dict[str, object]],
 ) -> tuple[list[ReviewDecision], list[ReviewDecision]]:
     """Retain related evidence on its static finding without counting it twice.
 
@@ -765,8 +769,42 @@ def _merge_related_semantic_decisions(
     """
 
     by_finding = {item.finding_index: item for item in static_decisions}
+    line_offsets = []
+    offset = 0
+    for line in source.splitlines(keepends=True):
+        line_offsets.append(offset)
+        offset += len(line)
+
+    def verified_links(semantic: ReviewDecision) -> tuple[int, ...]:
+        # Model indexes are claims, not trusted anchors. Use scanner positions;
+        # a static decision may quote a much larger, unrelated context window.
+        before = semantic.before
+        start = semantic.source_start
+        if start is None:
+            start = source.find(before) if before else -1
+            if start >= 0 and source.find(before, start + 1) >= 0:
+                return ()
+        if not before or start < 0 or source[start:start + len(before)] != before:
+            return ()
+        end = start + len(before)
+        valid = []
+        for index in semantic.related_finding_indexes:
+            finding = findings[index - 1]
+            line, col = finding.get("line"), finding.get("col")
+            match = finding.get("match")
+            if (not isinstance(line, int) or isinstance(line, bool)
+                    or not 1 <= line <= len(line_offsets)
+                    or not isinstance(col, int) or isinstance(col, bool) or col < 1
+                    or not isinstance(match, str) or not match):
+                continue
+            anchor = line_offsets[line - 1] + col - 1
+            if source[anchor:anchor + len(match)] == match and start <= anchor and anchor + len(match) <= end:
+                valid.append(index)
+        return tuple(valid)
+
     independent = []
     for semantic in semantic_decisions:
+        semantic = replace(semantic, related_finding_indexes=verified_links(semantic))
         if not semantic.related_finding_indexes:
             independent.append(semantic)
             continue

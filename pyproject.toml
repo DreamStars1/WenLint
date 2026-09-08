@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wenlint"
-version = "0.6.0"
+version = "0.6.1"
 description = "文尺 WenLint：中文写作静态检查器——像 ESLint 一样检查 PRD、论文、报告和 Markdown"
 readme = "README.md"
 license = { text = "MIT" }
