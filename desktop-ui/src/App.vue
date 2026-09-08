@@ -125,8 +125,7 @@ onMounted(() => {
   else window.addEventListener('pywebviewready', connectBridge, { once: true })
 })
 
-function clearResults() {
-  findings.value = []
+function clearSemanticResults() {
   summary.value = ''
   decisions.value = []
   revisedText.value = ''
@@ -138,8 +137,19 @@ function clearResults() {
   reviewDurationMs.value = 0
   modelCalls.value = 0
   semanticIssueCount.value = 0
-  selectedFindingIndex.value = 0
   selectedDecisionIndex.value = 0
+}
+
+function clearResults() {
+  findings.value = []
+  selectedFindingIndex.value = 0
+  clearSemanticResults()
+}
+
+function clearWorkspaceDocument() {
+  workspace.selectedPath = ''
+  workspace.selectedSha256 = ''
+  workspace.loadedText = ''
 }
 
 async function openFile() {
@@ -152,9 +162,7 @@ async function openFile() {
     editingStarted.value = true
     filename.value = result.filename
     filePath.value = result.path
-    workspace.selectedPath = ''
-    workspace.selectedSha256 = ''
-    workspace.loadedText = ''
+    clearWorkspaceDocument()
     clearResults()
     notify(`已打开 ${result.filename}`, 'success')
   } catch (error) {
@@ -167,6 +175,10 @@ async function toggleWorkspace() {
     workspace.visible = !workspace.visible
     return
   }
+  await selectWorkspace()
+}
+
+async function selectWorkspace() {
   try {
     const result = await callApi('open_workspace')
     if (!result.ok) throw new Error(result.error)
@@ -177,6 +189,8 @@ async function toggleWorkspace() {
     workspace.name = result.name
     workspace.files = result.files
     workspaceQuery.value = ''
+    clearWorkspaceDocument()
+    filePath.value = ''
     notify(`已关联工作区 ${result.name}`, 'success')
   } catch (error) {
     notify(error.message, 'error')
@@ -184,9 +198,18 @@ async function toggleWorkspace() {
 }
 
 async function changeWorkspace() {
-  workspace.connected = false
-  workspace.visible = false
-  await toggleWorkspace()
+  await selectWorkspace()
+}
+
+async function refreshWorkspace() {
+  try {
+    const result = await callApi('workspace_index')
+    if (!result.ok) throw new Error(result.error)
+    workspace.files = result.files
+    notify(`已刷新：${result.files.length} 个文本文件`, 'success')
+  } catch (error) {
+    notify(error.message, 'error')
+  }
 }
 
 async function openWorkspaceFile(item) {
@@ -245,9 +268,7 @@ async function acceptDroppedFile(event) {
     editingStarted.value = true
     filename.value = file.name
     filePath.value = ''
-    workspace.selectedPath = ''
-    workspace.selectedSha256 = ''
-    workspace.loadedText = ''
+    clearWorkspaceDocument()
     clearResults()
     notify(`已打开 ${file.name}`, 'success')
   } catch {
@@ -294,8 +315,8 @@ function requestSemanticReview() {
 async function runSemanticReview() {
   confirmOpen.value = false
   busy.value = 'review'
+  clearSemanticResults()
   reviewState.value = 'running'
-  reviewError.value = ''
   const requestedText = sourceText.value
   const requestedProfile = config.profile
   try {
@@ -314,7 +335,7 @@ async function runSemanticReview() {
     revisedText.value = result.revisedText
     reviewSource.value = requestedText
     reviewProfile.value = requestedProfile
-    reviewState.value = 'complete'
+    reviewState.value = result.reviewStatus === 'completed' ? 'complete' : 'error'
     reviewedAt.value = result.reviewedAt || new Date().toISOString()
     reviewDurationMs.value = result.durationMs || 0
     modelCalls.value = result.modelCalls || 1
@@ -399,7 +420,7 @@ function actionName(action) {
           </button>
           <div v-if="!filteredWorkspaceFiles.length" class="workspace-empty">没有可审查的文本文件</div>
         </div>
-        <footer><span>{{ workspace.files.length }} 个文本文件</span><button @click="changeWorkspace">更换目录</button></footer>
+        <footer><span>{{ workspace.files.length }} 个文本文件</span><div><button @click="refreshWorkspace">刷新</button><button @click="changeWorkspace">更换目录</button></div></footer>
       </aside>
 
       <article class="editor-pane" @dragover.prevent="dragActive = true" @dragleave.prevent="dragActive = false" @drop.prevent="acceptDroppedFile">
@@ -447,7 +468,7 @@ function actionName(action) {
 
         <section v-else-if="activeTab === 'decisions'" class="tab-body split-view">
           <div v-if="reviewState === 'idle'" class="empty-state review-idle"><span class="idle-mark">◇</span><strong>尚未进行语义复核</strong><p>点击顶部“语义复核”，模型会并发裁决规则候选并独立检查全文。</p></div>
-          <div v-else-if="reviewState === 'running'" class="empty-state review-running"><span class="large-spinner"></span><strong>正在进行两路语义复核</strong><p>候选裁决与全文独立发现并行运行。</p></div>
+          <div v-else-if="reviewState === 'running'" class="empty-state review-running"><span class="large-spinner"></span><strong>{{ findings.length ? '正在进行两路语义复核' : '正在进行全文语义复核' }}</strong><p>{{ findings.length ? '候选裁决与全文独立发现并行运行。' : '当前没有规则候选，模型正在独立检查全文。' }}</p></div>
           <div v-else-if="reviewState === 'error'" class="empty-state review-error"><span class="idle-mark">!</span><strong>本次语义复核未完成</strong><p>{{ reviewError }}</p></div>
           <div v-else-if="!decisions.length" class="review-complete">
             <span class="complete-mark">✓</span><h2>语义复核已完成</h2><strong>未发现需要修改或人工确认的问题</strong><p>{{ summary }}</p><small>{{ reviewMeta }}</small>

@@ -137,3 +137,23 @@ def test_workspace_write_rejects_unconfirmed_change(tmp_path) -> None:
     assert result["ok"] is False
     assert "确认" in result["error"]
     assert target.read_text(encoding="utf-8") == "原文"
+
+
+def test_workspace_api_can_write_empty_file(tmp_path) -> None:
+    target = tmp_path / "draft.md"
+    target.write_text("原文", encoding="utf-8")
+    api = DesktopApi()
+    api._workspace = WorkspaceSession(tmp_path)
+    opened = api.workspace_read({"path": "draft.md"})
+
+    result = api.workspace_write(
+        {
+            "path": "draft.md",
+            "text": "",
+            "expectedSha256": opened["sha256"],
+            "confirmed": True,
+        }
+    )
+
+    assert result["ok"] is True
+    assert target.read_text(encoding="utf-8") == ""

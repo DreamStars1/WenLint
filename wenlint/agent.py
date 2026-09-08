@@ -11,6 +11,7 @@ import json
 import socket
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
@@ -21,6 +22,13 @@ from .scanner import scan_text
 
 ALLOWED_ACTIONS = frozenset({"KEEP", "REWRITE", "VERIFY", "ASK"})
 MAX_TEXT_CHARS = 200_000
+
+
+class ReviewLane(str, Enum):
+    """The two validated model tasks used for one semantic review."""
+
+    STATIC = "static"
+    SEMANTIC = "semantic"
 
 
 class AgentError(RuntimeError):
@@ -152,11 +160,11 @@ class OpenAICompatibleAgent:
             raise ValueError(f"文本过长，当前最多支持 {MAX_TEXT_CHARS:,} 个字符")
 
         findings = scan_text(text, profile=profile, filename=filename)
-        lanes = ["semantic"]
+        lanes = [ReviewLane.SEMANTIC]
         if findings:
-            lanes.append("static")
+            lanes.append(ReviewLane.STATIC)
 
-        def run_lane(lane: str) -> tuple[str, list[ReviewDecision]]:
+        def run_lane(lane: ReviewLane) -> tuple[str, list[ReviewDecision]]:
             payload = self._build_payload(
                 text,
                 findings,
@@ -175,15 +183,11 @@ class OpenAICompatibleAgent:
                 futures = {lane: executor.submit(run_lane, lane) for lane in lanes}
                 lane_results = [futures[lane].result() for lane in lanes]
 
-        summaries = [summary for summary, _ in lane_results]
-        static_decisions = next(
-            (items for (lane, (_, items)) in zip(lanes, lane_results) if lane == "static"),
-            [],
-        )
-        semantic_decisions = next(
-            (items for (lane, (_, items)) in zip(lanes, lane_results) if lane == "semantic"),
-            [],
-        )
+        results_by_lane = dict(zip(lanes, lane_results, strict=True))
+        summaries = [results_by_lane[lane][0] for lane in lanes]
+        static_decisions = results_by_lane.get(ReviewLane.STATIC, ("", []))[1]
+        semantic_decisions = results_by_lane[ReviewLane.SEMANTIC][1]
+        semantic_decisions = _remove_static_duplicates(semantic_decisions, findings)
         decisions = _resolve_rewrite_conflicts(text, static_decisions, semantic_decisions)
         revised_text = _derive_revision(text, decisions)
         return AgentReview(
@@ -201,16 +205,16 @@ class OpenAICompatibleAgent:
         profile: str,
         filename: str,
         *,
-        lane: str,
+        lane: ReviewLane,
         workspace_context: str,
     ) -> dict[str, object]:
         task = {
-            "review_lane": lane,
+            "review_lane": lane.value,
             "filename": filename,
             "profile": profile,
             "document": text,
         }
-        if lane == "static":
+        if lane is ReviewLane.STATIC:
             task["static_findings"] = findings
             system_prompt = STATIC_REVIEW_PROMPT
         else:
@@ -288,7 +292,7 @@ def _extract_content(response: dict[str, object]) -> str:
 def _parse_lane(
     content: str,
     *,
-    lane: str,
+    lane: ReviewLane,
     findings: list[dict[str, object]],
 ) -> tuple[str, list[ReviewDecision]]:
     cleaned = content.strip()
@@ -342,10 +346,10 @@ def _parse_lane(
                 reason.strip(),
                 before,
                 after,
-                lane,
+                lane.value,
             )
         )
-    if lane == "static":
+    if lane is ReviewLane.STATIC:
         _validate_finding_coverage(decisions, findings)
         if any(item.finding_index is None for item in decisions):
             raise AgentProtocolError("静态裁决通道不得补充无索引问题")
@@ -358,6 +362,20 @@ def _parse_lane(
             if item.action == "KEEP":
                 raise AgentProtocolError("全文语义通道不得返回 KEEP")
     return summary.strip(), decisions
+
+
+def _remove_static_duplicates(
+    decisions: list[ReviewDecision], findings: list[dict[str, object]]
+) -> list[ReviewDecision]:
+    """Drop model-new items that exactly repeat a scanner match or sentence."""
+
+    covered = {
+        value.strip()
+        for finding in findings
+        for key in ("match", "sentence")
+        if isinstance((value := finding.get(key)), str) and value.strip()
+    }
+    return [item for item in decisions if not item.before or item.before.strip() not in covered]
 
 
 def _validate_finding_coverage(

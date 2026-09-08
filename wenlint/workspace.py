@@ -42,7 +42,11 @@ class WorkspaceSession:
     """Read and update supported text files below one user-selected root."""
 
     def __init__(self, root: str | Path) -> None:
-        resolved = Path(root).resolve(strict=True)
+        requested = Path(root)
+        is_junction = getattr(requested, "is_junction", lambda: False)
+        if requested.is_symlink() or is_junction():
+            raise WorkspaceError("工作区根目录不能是符号链接或目录联接")
+        resolved = requested.resolve(strict=True)
         if not resolved.is_dir():
             raise WorkspaceError("所选工作区不是目录")
         self.root = resolved
@@ -107,8 +111,8 @@ class WorkspaceSession:
     ) -> dict[str, object]:
         if not confirmed:
             raise WorkspaceError("写回工作区前必须由用户明确确认")
-        if not isinstance(text, str) or not text:
-            raise WorkspaceError("没有可写回的文本")
+        if not isinstance(text, str):
+            raise WorkspaceError("待写回内容必须是文本")
         target = self._resolve_file(relative_path)
         try:
             current = target.read_bytes()

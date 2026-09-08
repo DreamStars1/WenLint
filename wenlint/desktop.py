@@ -14,7 +14,7 @@ from . import __version__
 from .agent import AgentConfig, AgentError, MAX_TEXT_CHARS, OpenAICompatibleAgent
 from .profiles import PROFILES
 from .scanner import scan_text
-from .workspace import SUPPORTED_SUFFIXES, WorkspaceError, WorkspaceSession
+from .workspace import WorkspaceError, WorkspaceSession
 
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -49,7 +49,6 @@ class DesktopApi:
             "profiles": sorted(PROFILES),
             "maxTextChars": MAX_TEXT_CHARS,
             "maxFileBytes": MAX_FILE_BYTES,
-            "workspaceSuffixes": sorted(SUPPORTED_SUFFIXES),
         }
 
     def open_workspace(self) -> dict[str, object]:
@@ -104,7 +103,9 @@ class DesktopApi:
             return _failure("请求格式无效")
         try:
             path = _required_string(payload, "path", "工作区文件路径")
-            text = _required_string(payload, "text", "待写回文本")
+            text = payload.get("text")
+            if not isinstance(text, str):
+                raise ValueError("待写回内容必须是文本")
             expected_hash = _required_string(
                 payload, "expectedSha256", "文件内容校验值"
             )

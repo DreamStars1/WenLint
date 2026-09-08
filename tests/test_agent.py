@@ -237,6 +237,47 @@ def test_review_without_static_findings_still_runs_semantic_lane() -> None:
     assert result.semantic_issue_count == 0
 
 
+def test_review_drops_semantic_issue_that_duplicates_a_static_match() -> None:
+    def opener(request: object, *, timeout: float) -> FakeResponse:
+        if _request_lane(request) == "static":
+            body = {
+                "summary": "静态候选已裁决。",
+                "decisions": [
+                    {
+                        "finding_index": 1,
+                        "rule": "M002",
+                        "action": "KEEP",
+                        "reason": "上下文清楚。",
+                        "before": "仍然",
+                        "after": "",
+                    }
+                ],
+            }
+        else:
+            body = {
+                "summary": "发现问题。",
+                "decisions": [
+                    {
+                        "finding_index": None,
+                        "rule": "SEMANTIC_CONTEXT",
+                        "action": "ASK",
+                        "reason": "重复报告静态候选。",
+                        "before": "仍然",
+                        "after": "",
+                    }
+                ],
+            }
+        return FakeResponse(_response(json.dumps(body, ensure_ascii=False)))
+
+    result = OpenAICompatibleAgent(
+        AgentConfig("https://api.example.com/v1", "key", "model"), opener=opener
+    ).review("仍然需要复核。")
+
+    assert len(result.decisions) == 1
+    assert result.decisions[0].origin == "static"
+    assert result.semantic_issue_count == 0
+
+
 def test_review_rejects_malformed_provider_response_without_echoing_source() -> None:
     source = "这段原文不应出现在异常消息里"
 

@@ -93,6 +93,7 @@ button { color: inherit; }
 .workspace-empty { padding: 24px 10px; color: var(--faint); text-align: center; font-size: 10px; line-height: 1.6; }
 .workspace-panel > footer { height: 36px; flex: 0 0 36px; display: flex; align-items: center; justify-content: space-between; padding: 0 10px; border-top: 1px solid var(--border); color: var(--faint); font-size: 9px; }
 .workspace-panel > footer button { padding: 2px 0; border: 0; color: var(--blue); background: transparent; cursor: pointer; font-size: 10px; }
+.workspace-panel > footer > div { display: flex; gap: 9px; }
 .editor-pane { display: flex; flex-direction: column; }
 .pane-title { height: 40px; flex: 0 0 40px; display: flex; align-items: center; justify-content: space-between; gap: 7px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--border); background: #fbfaf7; }
 .pane-title > div { display: flex; align-items: center; gap: 7px; }
