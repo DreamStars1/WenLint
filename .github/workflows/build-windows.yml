@@ -80,7 +80,7 @@ jobs:
           ARTIFACT_NAME: ${{ matrix.artifact }}
         run: |
           python scripts/package-manifest.py "dist/$ARTIFACT_NAME.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7.0.1
         with:
           name: ${{ matrix.artifact }}
           path: |
@@ -89,6 +89,7 @@ jobs:
             dist/${{ matrix.artifact }}.build.json
           if-no-files-found: error
           retention-days: 30
+          compression-level: 0
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -97,7 +98,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8.0.1
         with:
           pattern: WenLint-*
           path: release

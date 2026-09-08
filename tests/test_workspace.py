@@ -77,11 +77,12 @@ def test_workspace_index_skips_nested_windows_junction(tmp_path, monkeypatch) ->
     (tmp_path / "normal" / "included.md").write_text("正文", encoding="utf-8")
     (tmp_path / "linked").mkdir()
     (tmp_path / "linked" / "outside.md").write_text("外部正文", encoding="utf-8")
-    original = Path.is_junction
+    original = getattr(Path, "is_junction", lambda path: False)
     monkeypatch.setattr(
         Path,
         "is_junction",
         lambda path: path.name == "linked" or original(path),
+        raising=False,
     )
 
     paths = [item["path"] for item in WorkspaceSession(tmp_path).index()]
@@ -93,11 +94,12 @@ def test_workspace_read_rejects_nested_windows_junction(tmp_path, monkeypatch) -
     linked = tmp_path / "linked"
     linked.mkdir()
     (linked / "outside.md").write_text("外部正文", encoding="utf-8")
-    original = Path.is_junction
+    original = getattr(Path, "is_junction", lambda path: False)
     monkeypatch.setattr(
         Path,
         "is_junction",
         lambda path: path == linked or original(path),
+        raising=False,
     )
     workspace = WorkspaceSession(tmp_path)
 
