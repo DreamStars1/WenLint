@@ -5,6 +5,9 @@ import {
   buildRevision,
   buildApprovedRevision,
   changeContext,
+  diffText,
+  diffRows,
+  locateChange,
   orderChanges,
   resolveSaveTarget,
 } from '../src/revision.js'
@@ -13,6 +16,85 @@ const changes = [
   { id: 2, before: '仍然需要复核', after: '该结论需要复核' },
   { id: 5, before: '之后再发布', after: '复核通过后发布' },
 ]
+
+test('word diff identifies insertion, deletion, and replacement without coloring unchanged words', () => {
+  assert.deepEqual(diffText('进行分析', '分析'), [{ kind: 'delete', text: '进行' }, { kind: 'equal', text: '分析' }])
+  assert.deepEqual(diffText('请提交报告', '请周五提交报告'), [{ kind: 'equal', text: '请' }, { kind: 'insert', text: '周五' }, { kind: 'equal', text: '提交报告' }])
+  assert.deepEqual(diffText('周一提交报告', '周五提交报告'), [{ kind: 'equal', text: '周' }, { kind: 'delete', text: '一' }, { kind: 'insert', text: '五' }, { kind: 'equal', text: '提交报告' }])
+  assert.deepEqual(diffText('全部删除', ''), [{ kind: 'delete', text: '全部删除' }])
+})
+
+test('separated edits preserve the unchanged middle and reconstruct both versions', () => {
+  const before = '请尽快提交报告，并尽快核对结果。'
+  const after = '请周五提交报告，并在发布前核对结果。'
+  const parts = diffText(before, after)
+  assert.equal(parts.filter(part => part.kind !== 'insert').map(part => part.text).join(''), before)
+  assert.equal(parts.filter(part => part.kind !== 'delete').map(part => part.text).join(''), after)
+  assert.ok(parts.some(part => part.kind === 'equal' && part.text.includes('提交报告，并')))
+  assert.deepEqual(diffText('复核复核结果', '复核结果'), [{ kind: 'equal', text: '复核' }, { kind: 'delete', text: '复核' }, { kind: 'equal', text: '结果' }])
+})
+
+test('Unicode grapheme clusters stay whole and context columns count visible characters', () => {
+  const family = '👨‍👩‍👧‍👦'
+  const parts = diffText(`你好${family}，cafe\u0301。`, '你好🙂，café。')
+  assert.ok(parts.some(part => part.kind === 'delete' && part.text === family))
+  assert.ok(parts.some(part => part.kind === 'delete' && part.text === 'e\u0301'))
+  const context = changeContext(`第一行\n${family}需要复核。\n结束`, '需要复核', 1)
+  assert.equal(context.line, 2)
+  assert.equal(context.column, 2)
+  assert.equal(context.before, family)
+})
+
+test('large near-identical paragraphs keep the stable middle neutral; fallback remains lossless', () => {
+  const middle = '稳定内容'.repeat(2000)
+  const parts = diffText(`甲${middle}乙`, `丙${middle}丁`)
+  assert.ok(parts.some(part => part.kind === 'equal' && part.text === middle))
+  const before = '甲'.repeat(500)
+  const after = '乙'.repeat(500)
+  const rewritten = diffText(before, after)
+  assert.equal(rewritten.filter(part => part.kind !== 'insert').map(part => part.text).join(''), before)
+  assert.equal(rewritten.filter(part => part.kind !== 'delete').map(part => part.text).join(''), after)
+})
+
+test('unified diff includes accurate old/new line numbers and shows unchanged context once', () => {
+  const rows = diffRows('标题\n周一提交\n保持这行\n尾注', '标题\n周五提交\n新增一行\n保持这行\n尾注', 12)
+  assert.deepEqual(rows.map(({ kind, oldLine, newLine }) => ({ kind, oldLine, newLine })), [
+    { kind: 'equal', oldLine: 12, newLine: 12 },
+    { kind: 'delete', oldLine: 13, newLine: null },
+    { kind: 'insert', oldLine: null, newLine: 13 },
+    { kind: 'insert', oldLine: null, newLine: 14 },
+    { kind: 'equal', oldLine: 14, newLine: 15 },
+    { kind: 'equal', oldLine: 15, newLine: 16 },
+  ])
+  assert.ok(rows[1].parts.some(part => part.kind === 'delete' && part.text === '一'))
+  assert.ok(rows[2].parts.some(part => part.kind === 'insert' && part.text === '五'))
+})
+
+test('unified insertion, whole deletion, and empty lines remain explicit', () => {
+  assert.deepEqual(diffRows('', '新增'), [{ kind: 'insert', oldLine: null, newLine: 1, parts: [{ kind: 'insert', text: '新增' }] }])
+  assert.deepEqual(diffRows('删除', ''), [{ kind: 'delete', oldLine: 1, newLine: null, parts: [{ kind: 'delete', text: '删除' }] }])
+  const rows = diffRows('前\n\n后', '前\n后')
+  assert.equal(rows[1].kind, 'delete')
+  assert.equal(rows[1].oldLine, 2)
+  assert.deepEqual(rows[1].parts, [])
+})
+
+test('Python code-point anchors target the correct repeated phrase after astral Unicode', () => {
+  const source = '😀重复。\n重复。'
+  const changes = [{ id: 'later', before: '重复', after: '后句', source_start: 5 }, { id: 'first', before: '重复', after: '前句', source_start: 1 }]
+  assert.equal(locateChange(source, changes[0]), 6)
+  assert.deepEqual(orderChanges(source, changes).map(item => item.id), ['first', 'later'])
+  assert.equal(buildApprovedRevision(source, changes, { later: 'accepted' }), '😀重复。\n后句。')
+  const context = changeContext(source, '重复', 8, 5)
+  assert.equal(context.line, 2)
+  assert.equal(context.column, 1)
+})
+
+test('invalid anchors fail closed instead of silently selecting an earlier duplicate', () => {
+  for (const source_start of [-1, 100, 1.5, 0]) {
+    assert.throws(() => buildApprovedRevision('😀重复。重复', [{ id: 1, before: '重复', after: '新文', source_start }], { 1: 'accepted' }), /修改位置/)
+  }
+})
 
 test('new proposals remain pending and do not change the document', () => {
   const source = '文档仍然需要复核，之后再发布。'

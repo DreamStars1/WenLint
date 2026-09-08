@@ -92,3 +92,12 @@ test('format repair is visible and separates the original request from the retry
   assert.equal(rows[2].outputMessage, '已收到 20 个输出字符。')
   assert.equal(rows[2].active, true)
 })
+
+test('segment progress remains visible and closes model activity at coordinator boundaries', () => {
+  const start = { sequence: 1, kind: 'segment_start', lane: 'coordinator', message: '检查第 1/3 段', segment: 1, total_segments: 3 }
+  const completed = { sequence: 4, kind: 'segment_complete', lane: 'coordinator', message: '第 1 段完成' }
+  const rows = projectAgentEvents([start, request(2, 'semantic'), output(3, 'semantic', 20), completed])
+  assert.deepEqual(rows[0], start)
+  assert.equal(rows[1].active, false)
+  assert.deepEqual(rows[2], completed)
+})

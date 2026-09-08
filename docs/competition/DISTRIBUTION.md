@@ -4,6 +4,8 @@
 
 在 GitHub 仓库 Actions 中手动运行 **build-desktop**（文件名保留为 `build-windows.yml`），完成后下载对应 artifact。推送 `v*` 标签时，所有平台测试和构建成功后统一发布到 GitHub Release。源代码推送本身不会生成发行标签。
 
+0.6.0候选代码 `a14c65e` 已通过 [Windows、macOS arm64/x64原生构建与打包自检](https://github.com/DreamStars1/WenLint/actions/runs/34255669816)，三个工件均已上传成功。
+
 | 平台 | 构建环境 | 文件 | 启动方式 |
 |---|---|---|---|
 | Windows x64 | `windows-latest` + Python 3.13 x64 | `WenLint-windows-x64.zip` | 完整解压，双击 `WenLint/WenLint.exe` |

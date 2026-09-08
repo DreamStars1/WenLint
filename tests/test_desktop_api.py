@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import codecs
 import sys
+import time
 from types import SimpleNamespace
 
 import wenlint.desktop as desktop_module
@@ -61,6 +62,51 @@ def test_save_requires_an_attached_window() -> None:
         "ok": False,
         "error": "窗口尚未就绪",
     }
+
+
+def test_save_revision_does_not_translate_line_endings(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "revision.md"
+    api = DesktopApi()
+    api.attach_window(SimpleNamespace(create_file_dialog=lambda *args, **kwargs: [str(target)]))
+    monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(FileDialog=SimpleNamespace(SAVE=1)))
+    text = "仅接受的修改。\n第二行保持。\r\n"
+    result = api.save_revision({"text": text})
+    assert result["ok"] is True
+    assert target.read_bytes() == text.encode("utf-8")
+
+
+def test_long_review_returns_session_before_background_result():
+    api = DesktopApi()
+    calls = []
+
+    class Sessions:
+        def prepare(self, text, config, **kwargs):
+            calls.append(("prepare", kwargs))
+            return "stable-session"
+
+        def run(self, text, config, **kwargs):
+            calls.append(("run", kwargs))
+            return {"ok": True, "reviewStatus": "partial", "reviewSessionId": "stable-session",
+                    "coverage": {"status": "partial"}, "canContinue": True, "decisions": []}
+
+    api._segmented_reviews = Sessions()
+    payload = {"text": "正文。" * 2200, "baseUrl": "https://example.com", "apiKey": "test", "model": "test"}
+    started = api.start_agent_review(payload)
+    assert started["ok"] and started["reviewSessionId"] == "stable-session"
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        status = api.agent_review_status({"job_id": started["job_id"]})
+        if status["state"] != "running":
+            break
+        time.sleep(0.005)
+    assert status["result"]["reviewStatus"] == "partial"
+    assert calls[1][1]["session_id"] == "stable-session"
+
+
+def test_changed_short_text_cannot_resume_long_review():
+    result = DesktopApi().start_agent_review({"text": "已缩短正文", "reviewSessionId": "old"})
+    assert not result["ok"]
+    assert "不能继续" in result["error"]
 
 
 def _open_standalone_file(api, target, monkeypatch) -> dict[str, object]:

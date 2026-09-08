@@ -1,7 +1,9 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { buildApprovedRevision, changeContext, orderChanges, resolveSaveTarget } from './revision.js'
+import { buildApprovedRevision, orderChanges, resolveSaveTarget } from './revision.js'
 import { projectAgentEvents } from './agent-events.js'
+import { normalizeDecisions, retainChangeChoices, reviewCompletionState, reviewFingerprint, requiresSegmentedReview } from './review-session.js'
+import ChangeDiff from './ChangeDiff.vue'
 
 const sourceText = ref('')
 const filename = ref('未命名文档.md')
@@ -14,6 +16,11 @@ const reviewSource = ref('')
 const reviewProfile = ref('')
 const reviewState = ref('idle')
 const reviewError = ref('')
+const reviewSessionId = ref('')
+const reviewCoverage = ref(null)
+const reviewWarning = ref('')
+const canContinue = ref(false)
+const sessionFingerprint = ref('')
 const reviewedAt = ref('')
 const reviewDurationMs = ref(0)
 const modelCalls = ref(0)
@@ -47,7 +54,7 @@ const progressFeed = ref(null)
 let disposed = false
 let elapsedTimer
 const selectedChangeIndex = ref(0)
-const limits = reactive({ maxFileBytes: 0, maxTextChars: 0 })
+const limits = reactive({ maxFileBytes: 0, maxTextChars: 0, segmentThresholdChars: 6000, segmentsPerBatch: 2 })
 const workspaceQuery = ref('')
 const workspace = reactive({
   connected: false,
@@ -75,34 +82,32 @@ const profileNames = {
   instruction: '指令文档',
 }
 
-const characterCount = computed(() => sourceText.value.length)
+const characterCount = computed(() => Array.from(sourceText.value).length)
+const isLongDocument = computed(() => requiresSegmentedReview(sourceText.value, limits.segmentThresholdChars))
 const selectedFinding = computed(() => findings.value[selectedFindingIndex.value] || null)
 const selectedDecision = computed(() => decisions.value[selectedDecisionIndex.value] || null)
 const rewriteChanges = computed(() => orderChanges(
   reviewSource.value,
-  decisions.value
-    .map((item, id) => ({ ...item, id }))
-    .filter((item) => item.action === 'REWRITE'),
+  decisions.value.filter((item) => item.action === 'REWRITE'),
 ))
 const rewriteDecisions = computed(() => rewriteChanges.value)
 const activeRewriteChanges = computed(() => rewriteChanges.value.filter((item) => changeChoices.value[item.id] === 'accepted'))
 const unconfirmedCount = computed(() => rewriteChanges.value.filter((item) => !changeChoices.value[item.id]).length)
 const rejectedCount = computed(() => rewriteChanges.value.filter((item) => changeChoices.value[item.id] === 'rejected').length)
 const hasAcceptedChanges = computed(() => activeRewriteChanges.value.length > 0)
-const agentStatus = computed(() => ({ idle: '准备就绪', running: '审查进行中', complete: '审查完成', error: '审查未完成', cancelled: '审查已取消' }[reviewState.value]))
+const agentStatus = computed(() => ({ idle: '准备就绪', running: '审查进行中', partial: '部分已检查', complete: demoMode.value ? '离线演示完成' : '全文检查完成', error: '本轮审查未完成', cancelled: '本轮审查已取消' }[reviewState.value]))
 const visibleAgentEvents = computed(() => projectAgentEvents(agentEvents.value, reviewState.value))
 const selectedChange = computed(() => rewriteChanges.value[selectedChangeIndex.value] || null)
-const selectedChangeContext = computed(() => (
-  selectedChange.value ? changeContext(reviewSource.value, selectedChange.value.before) : null
-))
-const hasRevision = computed(() => reviewState.value === 'complete' && rewriteChanges.value.length > 0)
+const hasRevision = computed(() => !!reviewedAt.value && reviewState.value !== 'running' && rewriteChanges.value.length > 0)
 const pendingCount = computed(
   () => decisions.value.filter((item) => ['VERIFY', 'ASK'].includes(item.action)).length,
 )
 const reviewIsStale = computed(
-  () => reviewState.value === 'complete'
+  () => !!reviewSource.value
     && (sourceText.value !== reviewSource.value || config.profile !== reviewProfile.value),
 )
+const sessionIsStale = computed(() => !!reviewSessionId.value && sessionFingerprint.value !== reviewFingerprint(currentReviewPayload()))
+const canResume = computed(() => canContinue.value && !!reviewSessionId.value && !sessionIsStale.value && !reviewIsStale.value && !busy.value)
 const revisionStale = computed(() => hasRevision.value && reviewIsStale.value)
 const saveTarget = computed(() => resolveSaveTarget(
   workspace.selectedPath,
@@ -124,7 +129,7 @@ const reviewMeta = computed(() => {
   const duration = reviewDurationMs.value >= 1000
     ? `${(reviewDurationMs.value / 1000).toFixed(1)} 秒`
     : `${reviewDurationMs.value} 毫秒`
-  return `${time} 完成 · ${duration} · ${demoMode.value ? '离线演示，未调用模型' : `${modelCalls.value} 路模型调用`}`
+  return `${time} ${reviewCoverage.value?.status === 'partial' ? '本轮结束，部分已检查' : '完成'} · ${duration} · ${demoMode.value ? '离线演示，未调用模型' : `${modelCalls.value} 次模型调用`}`
 })
 const modelState = computed(() => (
   browserDemo.value ? '离线演示 · 不调用模型' : config.baseUrl.trim() && config.apiKey.trim() && config.model.trim() ? '模型已配置' : '模型未配置'
@@ -154,6 +159,8 @@ async function connectBridge() {
       version.value = info.version
       limits.maxFileBytes = info.maxFileBytes
       limits.maxTextChars = info.maxTextChars
+      limits.segmentThresholdChars = info.segmentThresholdChars ?? 6000
+      limits.segmentsPerBatch = info.segmentsPerBatch ?? 2
     }
   } catch (error) {
     notify(error.message, 'error')
@@ -182,6 +189,11 @@ function clearSemanticResults() {
   reviewProfile.value = ''
   reviewState.value = 'idle'
   reviewError.value = ''
+  reviewSessionId.value = ''
+  reviewCoverage.value = null
+  reviewWarning.value = ''
+  canContinue.value = false
+  sessionFingerprint.value = ''
   reviewedAt.value = ''
   reviewDurationMs.value = 0
   modelCalls.value = 0
@@ -319,7 +331,7 @@ async function acceptDroppedFile(event) {
   }
   try {
     const content = await file.text()
-    if (limits.maxTextChars && content.length > limits.maxTextChars) {
+    if (limits.maxTextChars && Array.from(content).length > limits.maxTextChars) {
       notify(`文本超过 ${limits.maxTextChars.toLocaleString()} 个字符，请拆分后再处理`, 'error')
       return
     }
@@ -402,38 +414,66 @@ async function requestSemanticReview() {
   }
 }
 
-async function runSemanticReview(demo = false) {
+function currentReviewPayload() {
+  return {
+    text: sourceText.value,
+    profile: config.profile,
+    filename: filename.value,
+    baseUrl: config.baseUrl,
+    apiKey: config.apiKey,
+    model: config.model,
+    workspacePath: workspace.selectedPath || '',
+    workspaceRoot: workspace.root || '',
+    use_workspace_tools: useWorkspaceTools.value && workspace.connected && !demoMode.value,
+    demo: demoMode.value,
+  }
+}
+
+function appendReviewStatus(kind, message) {
+  agentEvents.value.push({ kind, message, sequence: agentEvents.value.length + 1, elapsed_ms: Date.now() - agentStartedAt.value })
+}
+
+async function continueReview() {
+  if (!canResume.value) return notify('正文或审查配置已变化，请重新开始审查', 'error')
+  await runSemanticReview(demoMode.value, true)
+}
+
+async function runSemanticReview(demo = false, resume = false) {
   confirmOpen.value = false
   if (busy.value) return
+  if (resume && !canResume.value) return notify('本次审查无法继续，请重新开始', 'error')
+  const previousDecisions = decisions.value
+  const previousChoices = changeChoices.value
+  const previousSelectedId = selectedChange.value?.id
+  const previousDecisionId = selectedDecision.value?.id
+  const elapsedOffset = resume ? elapsedMs.value : 0
   busy.value = 'review'
-  clearSemanticResults()
+  if (!resume) clearSemanticResults()
+  else { reviewError.value = ''; reviewWarning.value = '' }
   reviewState.value = 'running'
   demoMode.value = demo === true || browserDemo.value
   cancelling.value = false
   activeTab.value = 'agent'
-  agentStartedAt.value = Date.now()
+  agentStartedAt.value = Date.now() - elapsedOffset
+  agentJobId.value = ''
   const requestedText = sourceText.value
   const requestedProfile = config.profile
+  const payload = currentReviewPayload()
+  if (resume) payload.reviewSessionId = reviewSessionId.value
+  else sessionFingerprint.value = reviewFingerprint(payload)
+  reviewSource.value = requestedText
+  reviewProfile.value = requestedProfile
   try {
-    if (demoMode.value) {
+    if (demoMode.value && !resume) {
       const scan = await callApi('static_scan', { text: requestedText, profile: requestedProfile, filename: filename.value })
       if (!scan.ok) throw new Error(scan.error)
       findings.value = scan.findings
       selectedFindingIndex.value = 0
     }
-    const started = await callApi('start_agent_review', {
-      text: requestedText,
-      profile: requestedProfile,
-      filename: filename.value,
-      baseUrl: config.baseUrl,
-      apiKey: config.apiKey,
-      model: config.model,
-      workspacePath: workspace.selectedPath || '',
-      use_workspace_tools: useWorkspaceTools.value && workspace.connected && !demoMode.value,
-      demo: demoMode.value,
-    })
+    const started = await callApi('start_agent_review', payload)
     if (!started.ok) throw new Error(started.error)
     agentJobId.value = started.job_id
+    if (started.reviewSessionId) reviewSessionId.value = started.reviewSessionId
     let after = 0
     let result
     while (!disposed) {
@@ -444,7 +484,7 @@ async function runSemanticReview(demo = false) {
       const previousSteps = visibleAgentEvents.value.length
       for (const event of status.events || []) {
         if (event.sequence > after) {
-          agentEvents.value.push(event)
+          agentEvents.value.push({ ...event, job_sequence: event.sequence, sequence: agentEvents.value.length + 1, elapsed_ms: (event.elapsed_ms || 0) + elapsedOffset })
           after = event.sequence
         }
       }
@@ -454,7 +494,9 @@ async function runSemanticReview(demo = false) {
       }
       if (status.state === 'cancelled') {
         reviewState.value = 'cancelled'
-        notify('已取消审查，正文未修改')
+        canContinue.value = !!reviewSessionId.value
+        appendReviewStatus('cancelled', '本轮审查已取消，已有建议和确认决定已保留。')
+        notify(reviewSessionId.value ? '本轮已取消；已有建议与确认决定已保留，可继续剩余段落' : '已取消审查，正文未修改')
         return
       }
       if (status.state === 'error') throw new Error(status.error || '审查失败，请检查模型设置后重试')
@@ -465,20 +507,28 @@ async function runSemanticReview(demo = false) {
     if (!result) throw new Error('服务没有返回审查结果')
     if (!result.ok) throw new Error(result.error)
     demoMode.value = demoMode.value || result.demo === true
+    if (result.reviewSessionId) reviewSessionId.value = result.reviewSessionId
+    reviewCoverage.value = result.coverage || null
+    reviewWarning.value = result.warning || ''
+    canContinue.value = !!result.canContinue
     summary.value = result.summary
-    decisions.value = result.decisions
-    revisedText.value = requestedText
-    reviewSource.value = requestedText
-    reviewProfile.value = requestedProfile
-    reviewState.value = result.reviewStatus === 'completed' ? 'complete' : 'error'
+    const nextDecisions = normalizeDecisions(result.decisions || [])
+    const nextChoices = resume ? retainChangeChoices(previousDecisions, nextDecisions, previousChoices) : {}
+    decisions.value = nextDecisions
+    changeChoices.value = nextChoices
+    revisedText.value = buildApprovedRevision(requestedText, nextDecisions.filter((item) => item.action === 'REWRITE'), nextChoices)
+    reviewState.value = reviewCompletionState(result)
+    if (reviewState.value === 'error') throw new Error(result.error || '服务未返回有效审查状态')
+    appendReviewStatus('complete', reviewState.value === 'partial' ? '本轮结束：部分已检查，剩余段落需要继续检查。' : demoMode.value ? '离线演示已结束，示例建议仍需逐条确认。' : '全文检查已完成，修改仍需逐条确认。')
     reviewedAt.value = result.reviewedAt || new Date().toISOString()
     reviewDurationMs.value = result.durationMs || 0
     modelCalls.value = result.modelCalls ?? 0
     semanticIssueCount.value = demoMode.value ? 0 : result.semanticIssueCount || 0
-    selectedDecisionIndex.value = 0
-    selectedChangeIndex.value = 0
-    changeChoices.value = {}
-    const message = demoMode.value
+    selectedDecisionIndex.value = resume ? Math.max(0, nextDecisions.findIndex((item) => item.id === previousDecisionId)) : 0
+    selectedChangeIndex.value = resume ? Math.max(0, rewriteChanges.value.findIndex((item) => item.id === previousSelectedId)) : 0
+    const message = reviewState.value === 'partial'
+      ? `部分已检查：${reviewCoverage.value?.completed_segments || 0}/${reviewCoverage.value?.total_segments || '?'} 段；可继续检查剩余段落`
+      : demoMode.value
       ? `离线演示完成：${result.decisions.length} 条演示建议，未调用模型`
       : result.decisions.length
       ? `语义复核完成：${result.decisions.length} 条结论，其中 ${semanticIssueCount.value} 条为模型新发现`
@@ -486,7 +536,9 @@ async function runSemanticReview(demo = false) {
     notify(message, 'success')
   } catch (error) {
     reviewState.value = 'error'
+    canContinue.value = !!reviewSessionId.value
     reviewError.value = error.message
+    appendReviewStatus('error', error.message)
     notify(error.message, 'error')
   } finally {
     elapsedMs.value = Date.now() - agentStartedAt.value
@@ -508,7 +560,7 @@ async function cancelReview() {
 }
 
 function eventLabel(kind) {
-  return { plan: '计划', model_request: '模型请求', tool_call: '调用工具', tool_start: '调用工具', tool_result: '工具结果', summary: '决策摘要', decision: '决策摘要', status: '进度', progress: '进度', retry: '格式修复', lane_complete: '阶段完成', error: '错误', complete: '完成', cancelled: '已取消' }[kind] || '进度'
+  return { plan: '计划', model_request: '模型请求', tool_call: '调用工具', tool_start: '调用工具', tool_result: '工具结果', summary: '决策摘要', decision: '决策摘要', status: '进度', progress: '进度', retry: '格式修复', segment_start: '检查段落', segment_complete: '段落完成', lane_complete: '阶段完成', error: '错误', complete: '本轮结束', cancelled: '已取消' }[kind] || '进度'
 }
 
 function formatToolData(value) {
@@ -626,7 +678,7 @@ function actionName(action) {
       </div>
     </section>
 
-    <section :class="['workbench', { 'with-workspace': workspace.visible }]">
+    <section :class="['workbench', { 'with-workspace': workspace.visible, 'reviewing-revision': activeTab === 'revision' }]">
       <aside v-if="workspace.visible" class="workspace-panel">
         <header><div><span>工作区</span><strong :title="workspace.root">{{ workspace.name }}</strong></div><button title="收起工作区" @click="workspace.visible = false">‹</button></header>
         <div class="workspace-search"><input v-model="workspaceQuery" placeholder="筛选文件" spellcheck="false" /></div>
@@ -658,12 +710,18 @@ function actionName(action) {
       <aside class="review-pane">
         <nav class="review-tabs">
           <button :class="{ active: activeTab === 'findings' }" @click="activeTab = 'findings'">问题 <span>{{ findings.length }}</span></button>
-          <button :class="{ active: activeTab === 'decisions' }" @click="activeTab = 'decisions'">复核结论 <span :class="{ complete: reviewState === 'complete' }">{{ reviewState === 'complete' ? '已完成' : decisions.length }}</span></button>
+          <button :class="{ active: activeTab === 'decisions' }" @click="activeTab = 'decisions'">复核结论 <span :class="{ complete: reviewState === 'complete' }">{{ reviewState === 'complete' ? '已完成' : reviewState === 'partial' ? '部分已检查' : decisions.length }}</span></button>
           <button :class="{ active: activeTab === 'revision' }" @click="activeTab = 'revision'">修改稿</button>
           <button :class="{ active: activeTab === 'agent' }" @click="activeTab = 'agent'">Agent 过程<span v-if="reviewState === 'running'" class="spinner"></span></button>
         </nav>
 
         <div v-if="reviewIsStale" class="stale-notice">正文或场景已经变化，当前语义复核结果已过期；请重新复核。</div>
+        <div v-else-if="sessionIsStale" class="stale-notice">模型或工作区配置已变化，请重新开始审查；旧会话不能继续。</div>
+        <section v-if="reviewSessionId && (reviewCoverage || canContinue || reviewState === 'running')" class="coverage-panel" aria-label="全文检查覆盖范围">
+          <div><strong>{{ reviewCoverage?.status === 'complete' ? '全文检查完成' : reviewCoverage ? '部分已检查，尚未覆盖全文' : '长文尚未全部检查' }}</strong><span v-if="reviewCoverage">{{ reviewCoverage.completed_segments }} / {{ reviewCoverage.total_segments }} 段 · {{ reviewCoverage.reviewed_chars.toLocaleString() }} / {{ reviewCoverage.total_chars.toLocaleString() }} 字</span><span v-else>按段检查，每轮最多处理 2 段；已有建议会保留。</span></div>
+          <p v-if="reviewWarning">{{ reviewWarning }}</p>
+          <button v-if="canContinue" class="tool-button primary" :disabled="!canResume" @click="continueReview">继续检查剩余段落</button>
+        </section>
         <div v-if="browserDemo || (demoMode && reviewState !== 'idle')" class="demo-notice">离线演示 · 使用本地规则和示例建议，不调用模型。{{ browserDemo ? '真实语义复核请使用桌面版并配置模型。' : '真实语义复核请配置模型。' }}</div>
 
         <section v-if="activeTab === 'agent'" class="tab-body agent-tab">
@@ -674,8 +732,8 @@ function actionName(action) {
             <article v-for="event in visibleAgentEvents" :key="event.sequence" :class="['agent-event', event.kind]"><div><b>{{ eventLabel(event.kind) }}</b><span v-if="event.lane">{{ event.lane }}</span><time>{{ ((event.elapsed_ms || 0) / 1000).toFixed(1) }}s</time></div><p>{{ event.message }}</p><p v-if="event.kind === 'model_request'" class="stream-progress" aria-live="off"><span v-if="event.active" class="spinner"></span>{{ event.outputMessage || (event.active ? '等待模型输出…' : '本次请求已结束') }}<small v-if="event.outputElapsedMs !== undefined">{{ (event.outputElapsedMs / 1000).toFixed(1) }}s 更新</small></p><details v-if="event.tool || event.arguments !== undefined || event.args !== undefined || event.result !== undefined" class="tool-details"><summary>{{ event.tool || '工具' }} · 查看{{ event.result !== undefined ? '结果' : '调用参数' }}</summary><pre v-if="event.arguments !== undefined || event.args !== undefined">{{ formatToolData(event.arguments ?? event.args) }}</pre><pre v-if="event.result !== undefined">{{ formatToolData(event.result) }}</pre></details></article>
           </div>
           <div v-if="reviewState === 'error'" class="agent-outcome error"><strong>本次审查未完成</strong><p>{{ reviewError }}</p><button v-if="!browserDemo" class="tool-button" @click="settingsOpen = true">检查模型设置</button><button v-else class="tool-button" @click="startDemo">重试演示</button></div>
-          <div v-else-if="reviewState === 'cancelled'" class="agent-outcome"><strong>已取消，正文保持不变。</strong><p>可调整正文或模型设置后重新开始。</p></div>
-          <div v-else-if="reviewState === 'complete'" class="agent-outcome"><strong>{{ rewriteChanges.length }} 条改写 · {{ unconfirmedCount }} 待确认 · {{ pendingCount }} 待核实或补充</strong><button class="tool-button primary" @click="activeTab = rewriteChanges.length ? 'revision' : 'decisions'">{{ rewriteChanges.length ? '查看修改建议' : '查看复核结论' }}</button></div>
+          <div v-else-if="reviewState === 'cancelled'" class="agent-outcome"><strong>本轮已取消，正文保持不变。</strong><p>{{ reviewSessionId ? '已有建议和确认决定已保留，可继续检查剩余段落。' : '可调整正文或模型设置后重新开始。' }}</p></div>
+          <div v-else-if="['complete', 'partial'].includes(reviewState)" class="agent-outcome"><strong>{{ reviewState === 'partial' ? '截至当前：' : '' }}{{ rewriteChanges.length }} 条改写 · {{ unconfirmedCount }} 待确认 · {{ pendingCount }} 待核实或补充</strong><button class="tool-button primary" @click="activeTab = rewriteChanges.length ? 'revision' : 'decisions'">{{ rewriteChanges.length ? '查看修改建议' : '查看复核结论' }}</button></div>
         </section>
 
         <section v-else-if="activeTab === 'findings'" class="tab-body split-view">
@@ -700,10 +758,10 @@ function actionName(action) {
         <section v-else-if="activeTab === 'decisions'" class="tab-body split-view">
           <div v-if="reviewState === 'idle'" class="empty-state review-idle"><span class="idle-mark">◇</span><strong>{{ browserDemo ? '尚未进行演示审查' : '尚未进行语义复核' }}</strong><p>{{ browserDemo ? '点击顶部“演示审查”，体验本地检查、示例建议和逐条确认。' : '点击顶部“语义复核”，模型会并发裁决规则候选并独立检查全文。' }}</p></div>
           <div v-else-if="reviewState === 'running'" class="empty-state review-running"><span class="large-spinner"></span><strong>正在审查文档</strong><p>已用 {{ (elapsedMs / 1000).toFixed(1) }} 秒，可随时查看进度或取消。</p><button class="tool-button" @click="activeTab = 'agent'">查看 Agent 过程</button></div>
-          <div v-else-if="reviewState === 'cancelled'" class="empty-state"><strong>审查已取消</strong><p>正文未修改，可重新开始审查。</p></div>
-          <div v-else-if="reviewState === 'error'" class="empty-state review-error"><span class="idle-mark">!</span><strong>本次语义复核未完成</strong><p>{{ reviewError }}</p></div>
+          <div v-else-if="reviewState === 'cancelled' && !decisions.length" class="empty-state"><strong>本轮审查已取消</strong><p>正文未修改，长文可继续检查剩余段落。</p></div>
+          <div v-else-if="reviewState === 'error' && !decisions.length" class="empty-state review-error"><span class="idle-mark">!</span><strong>本次语义复核未完成</strong><p>{{ reviewError }}</p></div>
           <div v-else-if="!decisions.length" class="review-complete">
-            <span class="complete-mark">✓</span><h2>{{ demoMode ? '离线演示已完成' : '语义复核已完成' }}</h2><strong>{{ demoMode ? '当前内容未匹配演示建议' : '未发现需要修改或人工确认的问题' }}</strong><p>{{ summary }}</p><small>{{ reviewMeta }}</small>
+            <span class="complete-mark">✓</span><h2>{{ reviewState === 'partial' ? '部分已检查' : demoMode ? '离线演示已完成' : '语义复核已完成' }}</h2><strong>{{ reviewState === 'partial' ? '已检查部分暂无建议；剩余段落尚未检查' : demoMode ? '当前内容未匹配演示建议' : '未发现需要修改或人工确认的问题' }}</strong><p>{{ summary }}</p><small>{{ reviewMeta }}</small>
           </div>
           <template v-else>
             <div class="review-summary"><div><span class="complete-dot">✓</span><p>{{ summary }}</p></div><span>{{ rewriteDecisions.length }} 处改写 · {{ pendingCount }} 处待人工处理 · {{ demoMode ? `${decisions.length} 条演示建议` : `${semanticIssueCount} 条模型新发现` }}</span><small>{{ reviewMeta }}</small></div>
@@ -716,15 +774,16 @@ function actionName(action) {
             <div v-if="selectedDecision" class="detail-pane">
               <div class="detail-heading"><span :class="['action-label', selectedDecision.action.toLowerCase()]">{{ actionName(selectedDecision.action) }}</span><strong>{{ selectedDecision.rule }}</strong></div>
               <h3>{{ selectedDecision.reason }}</h3>
-              <div v-if="selectedDecision.before || selectedDecision.after" class="change-block"><div><span>− 原文</span><p>{{ selectedDecision.before || '—' }}</p></div><div><span>＋ 建议</span><p>{{ selectedDecision.after || '—' }}</p></div></div>
-              <button v-if="selectedDecision.action === 'REWRITE'" class="tool-button decision-review" @click="selectedChangeIndex = rewriteChanges.findIndex(item => item.id === selectedDecisionIndex); activeTab = 'revision'; revisionMode = 'full'">查看上下文并确认这条建议</button>
+              <ChangeDiff v-if="selectedDecision.action === 'REWRITE'" :source="reviewSource" :before="selectedDecision.before" :after="selectedDecision.after" :source-start="selectedDecision.source_start" />
+              <div v-else-if="selectedDecision.before || selectedDecision.after" class="change-block"><div><span>原文</span><p>{{ selectedDecision.before || '—' }}</p></div><div><span>补充提示</span><p>{{ selectedDecision.after || '请结合上述结论核实或补充信息。' }}</p></div></div>
+              <button v-if="selectedDecision.action === 'REWRITE'" class="tool-button decision-review" @click="selectedChangeIndex = rewriteChanges.findIndex(item => item.id === selectedDecision.id); activeTab = 'revision'; revisionMode = 'full'">查看上下文并确认这条建议</button>
             </div>
           </template>
         </section>
 
         <section v-else class="tab-body revision-tab">
           <div v-if="reviewState === 'idle'" class="empty-state"><strong>尚未生成修改稿</strong><p>完成语义复核后，可先查看变更，再决定是否应用或另存。</p></div>
-          <div v-else-if="reviewState === 'complete' && !rewriteDecisions.length" class="review-complete"><span class="complete-mark">✓</span><h2>复核完成，正文无变化</h2><p>{{ demoMode ? '当前正文未匹配演示中的改写示例；这不代表文档没有问题。' : '模型没有提出可直接应用的改写。' }} 待核实或待补充的信息仍需在“复核结论”中人工处理。</p><small>{{ reviewMeta }}</small></div>
+          <div v-else-if="['complete', 'partial'].includes(reviewState) && !rewriteDecisions.length" class="review-complete"><span class="complete-mark">✓</span><h2>{{ reviewState === 'partial' ? '部分已检查，暂无改写' : '复核完成，正文无变化' }}</h2><p>{{ reviewState === 'partial' ? '剩余段落尚未检查，请继续审查。' : demoMode ? '当前正文未匹配演示中的改写示例；这不代表文档没有问题。' : '模型没有提出可直接应用的改写。' }} 待核实或待补充的信息仍需在“复核结论”中人工处理。</p><small>{{ reviewMeta }}</small></div>
           <div v-else-if="!hasRevision" class="empty-state"><strong>没有可用修改稿</strong><p>本次复核未完成，请检查模型连接后重试。</p></div>
           <template v-else>
             <div class="revision-toolbar"><div><button :class="{ active: revisionMode === 'changes' }" @click="revisionMode = 'changes'">逐条确认</button><button :class="{ active: revisionMode === 'full' }" @click="revisionMode = 'full'">全文核对</button></div><span>{{ activeRewriteChanges.length }} 已采纳 · {{ unconfirmedCount }} 待确认 · {{ rejectedCount }} 保留</span></div>
@@ -732,17 +791,16 @@ function actionName(action) {
             <div v-if="revisionMode === 'changes'" class="changes-list">
               <div v-for="(item, index) in rewriteChanges" :key="item.id" :class="['diff-block', changeChoices[item.id] || 'pending']">
                 <header><span>{{ item.rule }} · 建议 {{ index + 1 }}</span><strong :class="['choice-badge', changeChoices[item.id] || 'pending']">{{ choiceLabel(item) }}</strong></header>
+                <div class="diff-actions"><span class="decision-target">建议 {{ index + 1 }}</span><button @click="selectedChangeIndex = index; revisionMode = 'full'">检查上下文</button><button v-if="changeChoices[item.id]" :disabled="revisionStale" @click="decideChange(item, null)">撤销决定</button><button :disabled="revisionStale || changeChoices[item.id] === 'rejected'" @click="decideChange(item, 'rejected')">保留原文</button><button class="accept-button" :disabled="revisionStale || changeChoices[item.id] === 'accepted'" @click="decideChange(item, 'accepted')">{{ changeChoices[item.id] === 'accepted' ? '已采纳' : '采纳建议' }}</button></div>
                 <div class="diff-reason"><strong>修改原因</strong><p>{{ item.reason }}</p></div>
-                <p class="removed">− {{ item.before }}</p><p class="added">＋ {{ item.after }}</p>
-                <div class="diff-actions"><button @click="selectedChangeIndex = index; revisionMode = 'full'">检查上下文</button><button v-if="changeChoices[item.id]" :disabled="revisionStale" @click="decideChange(item, null)">撤销决定</button><button :disabled="revisionStale || changeChoices[item.id] === 'rejected'" @click="decideChange(item, 'rejected')">保留原文</button><button class="accept-button" :disabled="revisionStale || changeChoices[item.id] === 'accepted'" @click="decideChange(item, 'accepted')">{{ changeChoices[item.id] === 'accepted' ? '已采纳' : '采纳建议' }}</button></div>
+                <ChangeDiff :source="reviewSource" :before="item.before" :after="item.after" :source-start="item.source_start" />
               </div>
             </div>
             <div v-else class="full-review">
-              <section v-if="selectedChange && selectedChangeContext" class="context-inspector">
+              <section v-if="selectedChange" class="context-inspector">
                 <div class="context-heading"><div><strong>变更 {{ selectedChangeIndex + 1 }} / {{ rewriteChanges.length }}</strong><span>{{ selectedChange.rule }}</span><em v-if="originLabel(selectedChange)">{{ originLabel(selectedChange) }}</em></div><div><button title="上一处" @click="selectRelativeChange(-1)">←</button><button title="下一处" @click="selectRelativeChange(1)">→</button></div></div>
                 <p class="context-reason"><strong>修改原因</strong>{{ selectedChange.reason }}</p>
-                <div class="context-quote"><span>{{ selectedChangeContext.before }}</span><mark>{{ selectedChangeContext.focus }}</mark><span>{{ selectedChangeContext.after }}</span></div>
-                <div class="context-proposal"><span>建议改为</span><p>{{ selectedChange.after }}</p><strong :class="['choice-badge', changeChoices[selectedChange.id] || 'pending']">{{ choiceLabel(selectedChange) }}</strong></div>
+                <ChangeDiff :source="reviewSource" :before="selectedChange.before" :after="selectedChange.after" :source-start="selectedChange.source_start" />
               </section>
               <div v-if="selectedChange" class="diff-actions context-actions"><span>建议 {{ selectedChangeIndex + 1 }} · {{ choiceLabel(selectedChange) }}</span><button v-if="changeChoices[selectedChange.id]" :disabled="revisionStale" @click="decideChange(selectedChange, null)">撤销决定</button><button :disabled="revisionStale || changeChoices[selectedChange.id] === 'rejected'" @click="decideChange(selectedChange, 'rejected')">保留原文</button><button class="accept-button" :disabled="revisionStale || changeChoices[selectedChange.id] === 'accepted'" @click="decideChange(selectedChange, 'accepted')">采纳建议</button></div>
               <textarea :value="revisedText" class="revision-editor" readonly spellcheck="false" aria-label="完整修改稿"></textarea>
@@ -762,7 +820,8 @@ function actionName(action) {
         <h2>发送文本进行语义复核</h2>
         <p>当前正文和静态检查结果将发送到以下模型服务：</p>
         <code>{{ config.baseUrl }}</code>
-        <ul><li>{{ findings.length ? `将并发执行候选裁决和全文独立发现（${findings.length} 条候选）` : '当前没有规则候选，将单独执行全文语义复核' }}</li><li>API Key 不会写入配置文件或日志</li><li>修改稿不会自动覆盖原文件</li><li>请确认该服务可以接收当前文档内容</li></ul>
+        <p v-if="isLongDocument" class="batch-consent">当前 {{ characterCount.toLocaleString() }} 字，将分段检查。本批最多检查 {{ limits.segmentsPerBatch }} 段、最多 12 次模型请求；未覆盖的部分需你点击“继续检查剩余段落”，不会自动无限续查。</p>
+        <ul><li>{{ isLongDocument ? '本批仅检查部分段落，逐段裁决候选并独立检查语义' : findings.length ? `将并发执行候选裁决和全文独立发现（${findings.length} 条候选）` : '当前没有规则候选，将单独执行全文语义复核' }}</li><li>API Key 不会写入配置文件或日志</li><li>修改稿不会自动覆盖原文件</li><li>请确认该服务可以接收当前文档内容</li></ul>
         <label v-if="workspace.connected" class="workspace-permission"><input v-model="useWorkspaceTools" type="checkbox" /><span>允许 Agent 检索工作区参考资料，并将相关片段发送给模型，帮助核实和完善文档。</span></label>
         <div class="modal-actions"><button class="tool-button" @click="confirmOpen = false">取消</button><button class="tool-button primary" @click="runSemanticReview(false)">确认发送</button></div>
       </section>

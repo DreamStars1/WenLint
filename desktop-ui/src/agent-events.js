@@ -1,7 +1,7 @@
-const visibleKinds = new Set(['plan', 'tool_call', 'tool_start', 'tool_result', 'summary', 'decision', 'status', 'progress', 'retry', 'lane_complete', 'error', 'complete', 'cancelled'])
+const visibleKinds = new Set(['plan', 'tool_call', 'tool_start', 'tool_result', 'summary', 'decision', 'status', 'progress', 'retry', 'segment_start', 'segment_complete', 'lane_complete', 'error', 'complete', 'cancelled'])
 const requestPattern = /^正在请求模型，第\s*(\d+)\s*次[。.]?$/u
 const outputPattern = /^已收到\s*(\d+)\s*个输出字符[。.]?$/u
-const requestBoundaries = new Set(['tool_call', 'tool_start', 'tool_result', 'decision', 'retry', 'lane_complete', 'error', 'complete', 'cancelled'])
+const requestBoundaries = new Set(['tool_call', 'tool_start', 'tool_result', 'decision', 'retry', 'segment_start', 'segment_complete', 'lane_complete', 'error', 'complete', 'cancelled'])
 
 // Keep the raw event history untouched. Only collapse transport progress in the
 // display projection; interleaved lanes and subsequent model requests stay distinct.
@@ -37,7 +37,7 @@ export function projectAgentEvents(events, reviewState = 'running') {
     }
 
     if (requestBoundaries.has(event.kind)) {
-      if (!lane && ['error', 'complete', 'cancelled'].includes(event.kind)) {
+      if (['segment_start', 'segment_complete'].includes(event.kind) || (!lane && ['error', 'complete', 'cancelled'].includes(event.kind))) {
         for (const row of requests.values()) row.active = false
       } else if (requests.has(lane)) requests.get(lane).active = false
     }

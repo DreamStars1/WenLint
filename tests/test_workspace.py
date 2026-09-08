@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from io import BytesIO
 
 import pytest
 
@@ -29,6 +30,48 @@ def test_workspace_reads_file_and_returns_hash(tmp_path) -> None:
     assert result["content"] == "原文"
     assert result["path"] == "draft.md"
     assert len(result["sha256"]) == 64
+
+
+def test_workspace_rejects_oversized_file_before_opening_it(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "large.md"
+    target.write_bytes(b"x" * 17)
+    workspace = WorkspaceSession(tmp_path)
+    monkeypatch.setattr("wenlint.workspace.MAX_WORKSPACE_FILE_BYTES", 16)
+    real_open = Path.open
+
+    def guarded_open(path, *args, **kwargs):
+        if path == target:
+            pytest.fail("oversized file must be rejected before opening")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded_open)
+    with pytest.raises(WorkspaceError, match="超过"):
+        workspace.read("large.md")
+
+
+def test_workspace_caps_read_if_file_grows_after_size_check(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "growing.md"
+    target.write_bytes(b"small")
+    workspace = WorkspaceSession(tmp_path)
+    monkeypatch.setattr("wenlint.workspace.MAX_WORKSPACE_FILE_BYTES", 16)
+    sizes = []
+
+    class GrowingFile(BytesIO):
+        def read(self, size=-1):
+            sizes.append(size)
+            return super().read(size)
+
+    real_open = Path.open
+
+    def replaced_open(path, *args, **kwargs):
+        if path == target:
+            return GrowingFile(b"x" * 64)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", replaced_open)
+    with pytest.raises(WorkspaceError, match="超过"):
+        workspace.read("growing.md")
+    assert sizes == [17]
 
 
 def test_workspace_review_context_contains_paths_but_not_sibling_contents(tmp_path) -> None:

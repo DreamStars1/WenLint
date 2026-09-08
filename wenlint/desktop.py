@@ -49,6 +49,7 @@ class DesktopApi:
         self._workspace: WorkspaceSession | None = None
         self._opened_file: OpenedFile | None = None
         self._review_jobs = ReviewJobs()
+        self._segmented_reviews = None
 
     def attach_window(self, window: Any) -> None:
         self._window = window
@@ -60,6 +61,8 @@ class DesktopApi:
             "profiles": sorted(PROFILES),
             "maxTextChars": MAX_TEXT_CHARS,
             "maxFileBytes": MAX_FILE_BYTES,
+            "segmentThresholdChars": 6000,
+            "segmentsPerBatch": 2,
         }
 
     def open_workspace(self) -> dict[str, object]:
@@ -185,9 +188,56 @@ class DesktopApi:
         if not isinstance(payload, dict):
             return _failure('请求格式无效')
         snapshot = dict(payload)
-        return self._review_jobs.start(
+        if payload.get('demo') is not True:
+            try:
+                text, profile, filename = _document_request(snapshot)
+                if snapshot.get('reviewSessionId') and len(text) <= 6000:
+                    raise ValueError('正文已改变，不能继续旧的长文审查')
+                if len(text) > 6000:
+                    config, _, access = self._online_review_inputs(snapshot)
+                    snapshot['reviewSessionId'] = self._long_reviews().prepare(
+                        text, config, profile=profile, filename=filename,
+                        workspace_access=access, workspace_key=self._workspace_key(snapshot),
+                        session_id=snapshot.get('reviewSessionId'),
+                    )
+            except (AgentError, ValueError, WorkspaceError) as exc:
+                return _failure(str(exc))
+        result = self._review_jobs.start(
             lambda emit, cancel: self.agent_review(snapshot, on_event=emit, cancel_event=cancel)
         )
+        if result.get('ok') and snapshot.get('reviewSessionId'):
+            result['reviewSessionId'] = snapshot['reviewSessionId']
+        return result
+
+    def _long_reviews(self):
+        if self._segmented_reviews is None:
+            from .segmented_review import SegmentedReviews
+            self._segmented_reviews = SegmentedReviews()
+        return self._segmented_reviews
+
+    def _workspace_key(self, payload):
+        return (id(self._workspace), payload.get('workspacePath'), payload.get('use_workspace_tools') is True)
+
+    def _online_review_inputs(self, payload):
+        config = AgentConfig(
+            base_url=_required_string(payload, "baseUrl", "Base URL"),
+            api_key=_required_string(payload, "apiKey", "API Key"),
+            model=_required_string(payload, "model", "模型名称"),
+        )
+        config.validate()
+        workspace_context = ""
+        workspace_access = None
+        workspace_path = payload.get("workspacePath")
+        if workspace_path:
+            if self._workspace is None:
+                raise ValueError("当前文件关联的工作区已经断开")
+            if not isinstance(workspace_path, str):
+                raise ValueError("工作区文件路径无效")
+            if payload.get('use_workspace_tools') is True:
+                workspace_access = WorkspaceAgentAccess(self._workspace, workspace_path)
+            else:
+                workspace_context = self._workspace.review_context(workspace_path)
+        return config, workspace_context, workspace_access
 
     def agent_review_status(self, payload: object) -> dict[str, object]:
         return self._review_jobs.status(payload)
@@ -206,23 +256,15 @@ class DesktopApi:
             if payload.get('demo') is True:
                 from .offline_demo import review_demo
                 return review_demo(text, profile, filename, on_event, cancel_event)
-            config = AgentConfig(
-                base_url=_required_string(payload, "baseUrl", "Base URL"),
-                api_key=_required_string(payload, "apiKey", "API Key"),
-                model=_required_string(payload, "model", "模型名称"),
-            )
-            workspace_context = ""
-            workspace_access = None
-            workspace_path = payload.get("workspacePath")
-            if workspace_path:
-                if self._workspace is None:
-                    raise ValueError("当前文件关联的工作区已经断开")
-                if not isinstance(workspace_path, str):
-                    raise ValueError("工作区文件路径无效")
-                if payload.get('use_workspace_tools') is True:
-                    workspace_access = WorkspaceAgentAccess(self._workspace, workspace_path)
-                else:
-                    workspace_context = self._workspace.review_context(workspace_path)
+            config, workspace_context, workspace_access = self._online_review_inputs(payload)
+            if payload.get('reviewSessionId') and len(text) <= 6000:
+                raise ValueError('正文已改变，不能继续旧的长文审查')
+            if len(text) > 6000:
+                return self._long_reviews().run(
+                    text, config, profile=profile, filename=filename,
+                    workspace_access=workspace_access, workspace_key=self._workspace_key(payload),
+                    session_id=payload.get('reviewSessionId'), on_event=on_event, cancel_event=cancel_event,
+                )
             options = {}
             if on_event is not None:
                 options.update(on_event=on_event, cancel_event=cancel_event)
@@ -274,7 +316,7 @@ class DesktopApi:
             if not selected:
                 return {"ok": True, "cancelled": True}
             target = Path(selected[0])
-            target.write_text(text, encoding="utf-8")
+            target.write_text(text, encoding="utf-8", newline="")
             return {"ok": True, "cancelled": False, "path": str(target)}
         except OSError as exc:
             return _failure(f"保存失败：{type(exc).__name__}")
@@ -360,8 +402,8 @@ def main(argv: list[str] | None = None) -> int:
         f"文尺 WenLint {__version__}",
         index.as_uri(),
         js_api=api,
-        width=1280,
-        height=820,
+        width=1200,
+        height=700,
         min_size=(960, 680),
         background_color="#f3f1ed",
         text_select=True,

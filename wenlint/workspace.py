@@ -87,7 +87,11 @@ class WorkspaceSession:
     def read(self, relative_path: str) -> dict[str, object]:
         target = self._resolve_file(relative_path)
         try:
-            raw = target.read_bytes()
+            if target.stat().st_size > MAX_WORKSPACE_FILE_BYTES:
+                raise WorkspaceError("工作区文件超过 2 MB，请拆分后再处理")
+            # Bound the actual read as well: the file may grow after stat().
+            with target.open("rb") as source:
+                raw = source.read(MAX_WORKSPACE_FILE_BYTES + 1)
         except OSError as exc:
             raise WorkspaceError(f"无法读取工作区文件（{type(exc).__name__}）") from None
         if len(raw) > MAX_WORKSPACE_FILE_BYTES:

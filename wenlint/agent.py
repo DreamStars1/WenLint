@@ -12,7 +12,7 @@ import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
@@ -85,6 +85,7 @@ class ReviewDecision:
     after: str
     origin: str
     related_finding_indexes: tuple[int, ...]
+    source_start: int | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +168,7 @@ class OpenAICompatibleAgent:
         on_event: Callable[[dict], None] | None = None,
         cancel_event: threading.Event | None = None,
         workspace_access: WorkspaceAgentAccess | None = None,
+        precomputed_findings: list[dict[str, object]] | None = None,
     ) -> AgentReview:
         """Run independent review lanes and derive the revision locally."""
 
@@ -186,7 +188,7 @@ class OpenAICompatibleAgent:
         if len(text) > MAX_TEXT_CHARS:
             raise ValueError(f"文本过长，当前最多支持 {MAX_TEXT_CHARS:,} 个字符")
 
-        findings = scan_text(text, profile=profile, filename=filename)
+        findings = scan_text(text, profile=profile, filename=filename) if precomputed_findings is None else list(precomputed_findings)
         lanes = [ReviewLane.SEMANTIC]
         if findings:
             lanes.append(ReviewLane.STATIC)
@@ -202,6 +204,8 @@ class OpenAICompatibleAgent:
                 lane=lane,
                 workspace_context=workspace_context,
             )
+            if precomputed_findings is not None:
+                payload["messages"][0]["content"] += "\n当前document只是长文中的一个有界片段。仅审查给出的片段，不声称已经核对未提供的全文部分。"  # type: ignore[index]
             access = workspace_access if lane is ReviewLane.SEMANTIC else None
             if access is not None:
                 payload["tools"] = list(access.tool_definitions)
@@ -215,6 +219,7 @@ class OpenAICompatibleAgent:
                     "数值、支持平台或产品能力等可核实事实时，必须先执行相关检索或读取，再得出结论；"
                     "不能仅凭行文通顺或模型常识宣布没有问题。没有可核实事实时不必调用工具。"
                     "列出文件只得到目录，不是事实证据。发现相关参考文件后必须读取其内容，或搜索相关正文片段。"
+                    "document已包含当前待审查文件的完整正文，不要重复读取它。存在其他参考文件时，必须取得参考文件的正文或搜索命中，不能用待审查稿自身证明自身正确。"
                     "可以在一次响应中并行请求多个相关文件，减少等待。"
                     "引用资料时在 reason 中注明文件相对路径和行号。不要为凑步骤调用工具。"
                     "最多 3 轮、8 次工具调用，之后必须返回最终 JSON。\n"
@@ -276,14 +281,9 @@ class OpenAICompatibleAgent:
                 if access is None or "tools" not in payload:
                     raise AgentProtocolError("模型在不允许调用工具的阶段请求了工具")
                 validated = _validate_tool_calls(tool_calls)
-                content_lookup_attempted = content_lookup_attempted or any(
+                attempted_lookup = content_lookup_attempted or any(
                     call["function"]["name"] in {"search_workspace_text", "read_workspace_file"} for call in validated
                 )
-                payload["tool_choice"] = "auto" if content_lookup_attempted else "required"
-                if not content_lookup_attempted:
-                    # Listing paths is navigation, not verification. Require a
-                    # bounded content lookup before accepting a final review.
-                    payload["tools"] = [tool for tool in access.tool_definitions if tool["function"]["name"] != "list_workspace_files"]
                 payload["messages"].append({  # type: ignore[union-attr]
                     "role": "assistant", "content": message.get("content"), "tool_calls": validated,
                 })
@@ -299,6 +299,12 @@ class OpenAICompatibleAgent:
                         result = access.execute(name, arguments)
                         emit("tool_result", lane, f"工作区工具 {name} 已返回。", tool=name, result=result)
                     payload["messages"].append({"role": "tool", "tool_call_id": call["id"], "content": result})  # type: ignore[union-attr]
+                content_lookup_attempted = attempted_lookup and not access.needs_reference_observation
+                payload["tool_choice"] = "auto" if content_lookup_attempted else "required"
+                if not content_lookup_attempted:
+                    # Neither listing paths nor re-reading the supplied draft
+                    # establishes evidence from available reference documents.
+                    payload["tools"] = [tool for tool in access.tool_definitions if tool["function"]["name"] != "list_workspace_files"]
             raise AgentProtocolError("Agent 未在工具预算内返回审查结果")
 
         if len(lanes) == 1:
@@ -319,9 +325,9 @@ class OpenAICompatibleAgent:
         summaries = [results_by_lane[lane][0] for lane in lanes]
         static_decisions = results_by_lane.get(ReviewLane.STATIC, ("", []))[1]
         semantic_decisions = results_by_lane[ReviewLane.SEMANTIC][1]
-        semantic_decisions = [
-            item for item in semantic_decisions if not item.related_finding_indexes
-        ]
+        static_decisions, semantic_decisions = _merge_related_semantic_decisions(
+            static_decisions, semantic_decisions
+        )
         decisions = _resolve_rewrite_conflicts(text, static_decisions, semantic_decisions)
         revised_text = _derive_revision(text, decisions)
         return AgentReview(
@@ -748,6 +754,41 @@ def _validate_finding_coverage(
             )
 
 
+def _merge_related_semantic_decisions(
+    static_decisions: list[ReviewDecision],
+    semantic_decisions: list[ReviewDecision],
+) -> tuple[list[ReviewDecision], list[ReviewDecision]]:
+    """Retain related evidence on its static finding without counting it twice.
+
+    Only identical rewrite proposals can remain automatic. Disagreements retain
+    their explanations and become questions or fact checks for the author.
+    """
+
+    by_finding = {item.finding_index: item for item in static_decisions}
+    independent = []
+    for semantic in semantic_decisions:
+        if not semantic.related_finding_indexes:
+            independent.append(semantic)
+            continue
+        for finding_index in semantic.related_finding_indexes:
+            static = by_finding[finding_index]
+            conflict = static.action != semantic.action or (
+                static.action == "REWRITE"
+                and (static.before, static.after) != (semantic.before, semantic.after)
+            )
+            action = static.action
+            after = static.after
+            reason = (
+                f"{static.reason}\n语义补充（{semantic.rule}，{semantic.action}）：{semantic.reason}"
+            )
+            if conflict:
+                action = "VERIFY" if "VERIFY" in {static.action, semantic.action} else "ASK"
+                after = ""
+                reason += "\n两路审查结论或修改方案不一致，需核实后再决定。"
+            by_finding[finding_index] = replace(static, action=action, after=after, reason=reason)
+    return [by_finding[item.finding_index] for item in static_decisions], independent
+
+
 def _resolve_rewrite_conflicts(
     source: str,
     static_decisions: list[ReviewDecision],
@@ -773,6 +814,7 @@ def _resolve_rewrite_conflicts(
                     after="",
                     origin=item.origin,
                     related_finding_indexes=item.related_finding_indexes,
+                    source_start=item.source_start,
                 )
             )
             continue
@@ -786,6 +828,11 @@ def _unique_span(source: str, item: ReviewDecision) -> tuple[int, int]:
         raise AgentProtocolError("REWRITE decision 缺少 before")
     if item.before == item.after:
         raise AgentProtocolError("REWRITE decision 没有产生修改")
+    if item.source_start is not None:
+        start = item.source_start
+        if isinstance(start, bool) or not isinstance(start, int) or start < 0 or source[start:start + len(item.before)] != item.before:
+            raise AgentProtocolError("REWRITE decision 的原文位置已失效")
+        return start, start + len(item.before)
     if source.count(item.before) != 1:
         raise AgentProtocolError("REWRITE decision 的 before 无法唯一定位")
     start = source.index(item.before)

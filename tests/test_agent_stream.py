@@ -170,7 +170,7 @@ def test_tool_rounds_and_total_calls_are_bounded(tmp_path):
         requests.append(payload)
         if "tools" not in payload:
             return Response(final_stream())
-        calls = [{"index": index, "id": f"round{len(requests)}_{index}", "function": {"name": "search_workspace_text", "arguments": '{"query":"正文"}'}} for index in range(3)]
+        calls = [{"index": index, "id": f"round{len(requests)}_{index}", "function": {"name": "search_workspace_text", "arguments": '{"query":"五月"}'}} for index in range(3)]
         return Response(event({"tool_calls": calls}, "tool_calls") + b"data: [DONE]\n\n")
 
     result = client(opener).review("文档正文。", workspace_access=access, on_event=events.append)
@@ -197,6 +197,26 @@ def test_listing_paths_must_be_followed_by_content_lookup(tmp_path):
             assert "五月一日" in payload["messages"][-1]["content"]
             return Response(final_stream())
         return Response(event({"tool_calls": [{"index": 0, "id": str(len(requests)), "function": {"name": name, "arguments": arguments}}]}, "tool_calls"))
+
+    result = client(opener).review("文档正文。", workspace_access=access_for(tmp_path), on_event=lambda _: None)
+    assert result.model_calls == 3
+
+
+def test_rereading_draft_cannot_finish_verification_when_references_exist(tmp_path):
+    requests = []
+
+    def opener(request, *, timeout):
+        payload = json.loads(request.data)
+        requests.append(payload)
+        if len(requests) == 1:
+            path = "draft.md"
+        elif len(requests) == 2:
+            assert payload["tool_choice"] == "required"
+            path = "facts.md"
+        else:
+            assert payload["tool_choice"] == "auto"
+            return Response(final_stream())
+        return Response(event({"tool_calls": [{"index": 0, "id": str(len(requests)), "function": {"name": "read_workspace_file", "arguments": json.dumps({"path": path})}}]}, "tool_calls"))
 
     result = client(opener).review("文档正文。", workspace_access=access_for(tmp_path), on_event=lambda _: None)
     assert result.model_calls == 3

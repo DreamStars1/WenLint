@@ -238,7 +238,7 @@ def test_review_without_static_findings_still_runs_semantic_lane() -> None:
     assert result.semantic_issue_count == 0
 
 
-def test_review_drops_semantic_issue_that_duplicates_a_static_match() -> None:
+def test_review_merges_related_semantic_reason_into_static_match() -> None:
     def opener(request: object, *, timeout: float) -> FakeResponse:
         if _request_lane(request) == "static":
             body = {
@@ -263,7 +263,7 @@ def test_review_drops_semantic_issue_that_duplicates_a_static_match() -> None:
                         "related_finding_indexes": [1],
                         "rule": "SEMANTIC_CONTEXT",
                         "action": "ASK",
-                        "reason": "重复报告静态候选。",
+                        "reason": "时间线仍缺少依据，参见 evidence/timeline.md:12。",
                         "before": "仍然",
                         "after": "",
                     }
@@ -277,10 +277,13 @@ def test_review_drops_semantic_issue_that_duplicates_a_static_match() -> None:
 
     assert len(result.decisions) == 1
     assert result.decisions[0].origin == "static"
+    assert result.decisions[0].action == "ASK"
+    assert "上下文清楚。" in result.decisions[0].reason
+    assert "evidence/timeline.md:12" in result.decisions[0].reason
     assert result.semantic_issue_count == 0
 
 
-def test_review_drops_larger_semantic_span_overlapping_static_match() -> None:
+def test_review_merges_related_larger_span_without_counting_a_new_issue() -> None:
     def opener(request: object, *, timeout: float) -> FakeResponse:
         if _request_lane(request) == "static":
             body = {
@@ -305,7 +308,7 @@ def test_review_drops_larger_semantic_span_overlapping_static_match() -> None:
                         "related_finding_indexes": [1],
                         "rule": "SEMANTIC_CONTEXT",
                         "action": "ASK",
-                        "reason": "重复报告静态候选。",
+                        "reason": "整句未交代旧值来自哪个版本。",
                         "before": "系统仍然保留旧值",
                         "after": "",
                     }
@@ -318,6 +321,95 @@ def test_review_drops_larger_semantic_span_overlapping_static_match() -> None:
     ).review("系统仍然保留旧值。")
 
     assert result.semantic_issue_count == 0
+    assert len(result.decisions) == 1
+    assert result.decisions[0].finding_index == 1
+    assert result.decisions[0].before == "仍然"
+    assert "整句未交代旧值来自哪个版本。" in result.decisions[0].reason
+    assert result.revised_text == "系统仍然保留旧值。"
+
+
+@pytest.mark.parametrize(
+    "static_action,semantic_action,semantic_after,expected_action",
+    [
+        ("REWRITE", "REWRITE", "该结论需要复核。", "REWRITE"),
+        ("REWRITE", "REWRITE", "该结论无需复核。", "ASK"),
+        ("REWRITE", "VERIFY", "", "VERIFY"),
+        ("REWRITE", "ASK", "", "ASK"),
+        ("KEEP", "REWRITE", "该结论需要复核。", "ASK"),
+        ("VERIFY", "REWRITE", "该结论需要复核。", "VERIFY"),
+    ],
+)
+def test_related_evidence_preserves_agreement_and_blocks_conflicting_edits(
+    static_action: str, semantic_action: str, semantic_after: str, expected_action: str
+) -> None:
+    source = "仍然需要复核。"
+
+    def opener(request: object, *, timeout: float) -> FakeResponse:
+        is_static = _request_lane(request) == "static"
+        decision = {
+            "finding_index": 1 if is_static else None,
+            "related_finding_indexes": [] if is_static else [1],
+            "rule": "M002" if is_static else "SEMANTIC_EVIDENCE",
+            "action": static_action if is_static else semantic_action,
+            "reason": "静态候选需要判断。" if is_static else "根据 evidence/report.md:8 核对结论。",
+            "before": source,
+            "after": ("该结论需要复核。" if static_action == "REWRITE" else "") if is_static else semantic_after,
+        }
+        return FakeResponse(_response(json.dumps({"summary": "审查完成。", "decisions": [decision]}, ensure_ascii=False)))
+
+    result = OpenAICompatibleAgent(
+        AgentConfig("https://api.example.com/v1", "key", "model"), opener=opener
+    ).review(source)
+
+    assert len(result.decisions) == 1
+    merged = result.decisions[0]
+    assert (merged.finding_index, merged.rule, merged.origin) == (1, "M002", "static")
+    assert merged.action == expected_action
+    assert "静态候选需要判断。" in merged.reason
+    assert "evidence/report.md:8" in merged.reason
+    assert result.semantic_issue_count == 0
+    assert result.revised_text == ("该结论需要复核。" if expected_action == "REWRITE" else source)
+    if expected_action != "REWRITE":
+        assert merged.after == ""
+
+
+def test_related_evidence_reaches_all_linked_findings_and_counts_only_independent_issue() -> None:
+    source = "总而言之，我们对方案进行分析。"
+
+    def opener(request: object, *, timeout: float) -> FakeResponse:
+        payload = json.loads(request.data.decode("utf-8"))
+        task = json.loads(payload["messages"][1]["content"].split("\n", 1)[1])
+        if task["review_lane"] == "static":
+            decisions = [
+                {"finding_index": index, "rule": finding["rule_id"], "action": "KEEP",
+                 "reason": f"候选 {index} 可保留。", "before": source, "after": ""}
+                for index, finding in enumerate(task["static_findings"], 1)
+            ]
+            assert len(decisions) == 2
+            # Model order is not a reliable substitute for finding_index.
+            decisions.reverse()
+        else:
+            decisions = [
+                {"finding_index": None, "related_finding_indexes": [1, 2],
+                 "rule": "SEMANTIC_EVIDENCE", "action": "VERIFY",
+                 "reason": "结论需与 evidence/analysis.md:6 核对。", "before": source, "after": ""},
+                {"finding_index": None, "related_finding_indexes": [],
+                 "rule": "SEMANTIC_SCOPE", "action": "ASK",
+                 "reason": "请明确方案的适用范围。", "before": "方案", "after": ""},
+            ]
+        return FakeResponse(_response(json.dumps({"summary": "审查完成。", "decisions": decisions}, ensure_ascii=False)))
+
+    result = OpenAICompatibleAgent(
+        AgentConfig("https://api.example.com/v1", "key", "model"), opener=opener
+    ).review(source)
+
+    assert len(result.decisions) == 3
+    linked = [item for item in result.decisions if item.origin == "static"]
+    assert {item.finding_index for item in linked} == {1, 2}
+    assert all(item.action == "VERIFY" and "evidence/analysis.md:6" in item.reason for item in linked)
+    assert result.semantic_issue_count == 1
+    assert result.decisions[-1].rule == "SEMANTIC_SCOPE"
+    assert result.revised_text == source
 
 
 def test_review_keeps_distinct_semantic_span_in_same_sentence() -> None:
