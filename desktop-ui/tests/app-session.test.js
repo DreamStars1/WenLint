@@ -9,6 +9,7 @@ import { compileScript, parse } from 'vue/compiler-sfc'
 const source = await readFile(new URL('../src/App.vue', import.meta.url), 'utf8')
 let script = compileScript(parse(source).descriptor, { id: 'session-integration' }).content
 script = script.replace("import ChangeDiff from './ChangeDiff.vue'", 'const ChangeDiff = {}')
+script = script.replace("import DocumentContext from './DocumentContext.vue'", 'const DocumentContext = {}')
 script = script.replaceAll("from 'vue'", `from '${import.meta.resolve('vue')}'`)
 for (const file of ['revision.js', 'agent-events.js', 'review-session.js']) {
   script = script.replaceAll(`from './${file}'`, `from '${new URL(`../src/${file}`, import.meta.url).href}'`)
@@ -19,6 +20,7 @@ function mountApp(statuses) {
   const requests = []
   const clarifications = []
   const saves = []
+  const writes = []
   const priorWindow = globalThis.window
   globalThis.window = {
     pywebview: { api: {
@@ -31,6 +33,8 @@ function mountApp(statuses) {
         return typeof status === 'function' ? status() : status
       },
       save_revision: async (payload) => { saves.push({ ...payload }); return { ok: true, path: 'document.revised.md' } },
+      save_original: async (payload) => { writes.push({ ...payload }); return { ok: true, path: 'document.md', sha256: 'saved-sha' } },
+      workspace_write: async (payload) => { writes.push({ ...payload }); return { ok: true, path: payload.path, sha256: 'saved-sha' } },
     } },
     setInterval: () => 0,
     clearInterval: () => {},
@@ -42,7 +46,7 @@ function mountApp(statuses) {
   const renderer = createRenderer({ createComment: () => ({}), insert: () => {}, remove: () => {}, parentNode: () => null, nextSibling: () => null })
   const app = renderer.createApp({ setup(props, context) { state = App.setup(props, context); return () => null } })
   app.mount({})
-  return { state, requests, clarifications, saves, close() { app.unmount(); globalThis.window = priorWindow } }
+  return { state, requests, clarifications, saves, writes, close() { app.unmount(); globalThis.window = priorWindow } }
 }
 
 const first = { id: 'first', action: 'REWRITE', before: '重复', after: '前文', source_start: 1, reason: '前句建议' }
@@ -105,6 +109,139 @@ const acceptedEdit = { id: 'accepted', action: 'REWRITE', rule: 'C001', before: 
 const question = { id: 'ask-date', action: 'ASK', rule: 'C002', before: '下月', after: '', source_start: 3, reason: '具体是哪一天上线？' }
 const clarified = { ...question, action: 'REWRITE', after: '9月15日', reason: '使用作者补充的日期' }
 const clarificationResult = (decision = clarified) => ({ ok: true, state: 'complete', events: [], result: { ok: true, decision, modelCalls: 1 } })
+
+test('applying a revision still allows exporting the edited document', async () => {
+  const harness = mountApp([result('completed', [acceptedEdit, question])])
+  try {
+    await nextTick()
+    const { state, saves } = harness
+    state.sourceText.value = draft
+    await state.runSemanticReview(false)
+    state.decideChange(state.rewriteChanges.value[0], 'accepted')
+    state.applyRevision()
+    await state.saveRevisionAs()
+    assert.equal(saves.length, 1, 'save must remain available after applying to the editor')
+    assert.equal(saves[0].text, '简洁。下月上线。')
+  } finally { harness.close() }
+})
+
+test('one-click apply respects rejected edits and questions, supports undo, and never writes automatically', async () => {
+  const excluded = { ...acceptedEdit, id: 'excluded', before: '上线', after: '发布', source_start: 5 }
+  const harness = mountApp([result('completed', [acceptedEdit, excluded, question])])
+  try {
+    await nextTick()
+    const { state, writes, saves } = harness
+    state.sourceText.value = draft
+    await state.runSemanticReview(false)
+    state.decideChange(excluded, 'rejected')
+    state.applyAllRevisions()
+    assert.equal(state.sourceText.value, '简洁。下月上线。')
+    assert.equal(state.canUndoApplication.value, true)
+    assert.deepEqual([writes.length, saves.length], [0, 0])
+    state.undoApplication()
+    assert.equal(state.sourceText.value, draft)
+    assert.equal(state.canUndoApplication.value, null)
+  } finally { harness.close() }
+})
+
+test('one-click apply is atomic when proposals overlap and does not discard prior choices', async () => {
+  const overlap = { ...acceptedEdit, id: 'overlap', before: draft, after: '新方案。', source_start: 0 }
+  const harness = mountApp([result('completed', [acceptedEdit, overlap])])
+  try {
+    await nextTick()
+    const { state } = harness
+    state.sourceText.value = draft
+    await state.runSemanticReview(false)
+    state.decideChange(acceptedEdit, 'accepted')
+    state.applyAllRevisions()
+    assert.equal(state.sourceText.value, draft)
+    assert.deepEqual(state.changeChoices.value, { accepted: 'accepted' })
+    assert.equal(state.revisedText.value, '简洁。下月上线。')
+    assert.match(state.toast.message, /重叠/)
+  } finally { harness.close() }
+})
+
+test('applied and manually edited text saves to either original target, with repeat-save hash updates', async () => {
+  for (const workspaceMode of [false, true]) {
+    const harness = mountApp([result('completed', [acceptedEdit])])
+    try {
+      await nextTick()
+      const { state, writes } = harness
+      state.sourceText.value = draft
+      if (workspaceMode) Object.assign(state.workspace, { selectedPath: 'document.md', selectedSha256: 'original-sha', loadedText: draft })
+      else state.standaloneSha256.value = 'original-sha'
+      await state.runSemanticReview(false)
+      state.applyAllRevisions()
+      state.sourceText.value += '补充正文。'
+      state.requestSaveOriginal('document')
+      assert.equal(state.saveOriginalConfirm.value, true)
+      await state.saveToOriginal()
+      assert.equal(writes[0].text, '简洁。下月上线。补充正文。')
+      assert.equal(writes[0].confirmed, true)
+      if (workspaceMode) assert.equal(writes[0].expectedSha256, 'original-sha')
+      state.requestSaveOriginal('document')
+      await state.saveToOriginal()
+      if (workspaceMode) assert.equal(writes[1].expectedSha256, 'saved-sha')
+      assert.equal(state.sourceText.value, writes[1].text)
+    } finally { harness.close() }
+  }
+})
+
+test('document export saves manual edits while revision export refuses stale proposals', async () => {
+  const harness = mountApp([result('completed', [acceptedEdit])])
+  try {
+    await nextTick()
+    const { state, saves } = harness
+    state.sourceText.value = draft
+    await state.runSemanticReview(false)
+    state.decideChange(acceptedEdit, 'accepted')
+    state.sourceText.value += '手动修改。'
+    await state.saveRevisionAs()
+    assert.equal(saves.length, 0)
+    await state.saveRevisionAs('document')
+    assert.equal(saves[0].text, draft + '手动修改。')
+  } finally { harness.close() }
+})
+
+test('undo application expires when a new review begins or the original is saved', async () => {
+  const harness = mountApp([result('completed', [acceptedEdit]), result('completed', [])])
+  try {
+    await nextTick()
+    const { state } = harness
+    state.sourceText.value = draft
+    await state.runSemanticReview(false)
+    state.applyAllRevisions()
+    assert.equal(state.canUndoApplication.value, true)
+    await state.runSemanticReview(false)
+    assert.equal(state.canUndoApplication.value, null)
+    state.appliedDocument.value = { before: draft, after: state.sourceText.value, identity: state.filename.value }
+    state.standaloneSha256.value = 'initial'
+    state.requestSaveOriginal('document')
+    await state.saveToOriginal()
+    assert.equal(state.canUndoApplication.value, null)
+    state.appliedDocument.value = { before: draft, after: state.sourceText.value, identity: state.filename.value }
+    Object.assign(state.workspace, { selectedPath: 'document.md', selectedSha256: 'original-sha' })
+    await state.writeWorkspaceFile()
+    assert.equal(state.canUndoApplication.value, null)
+  } finally { harness.close() }
+})
+
+test('invalidated revision confirmation reports failure instead of writing the editor silently', async () => {
+  const harness = mountApp([result('completed', [acceptedEdit])])
+  try {
+    await nextTick()
+    const { state, writes } = harness
+    state.sourceText.value = draft
+    state.standaloneSha256.value = 'initial'
+    await state.runSemanticReview(false)
+    state.decideChange(acceptedEdit, 'accepted')
+    state.requestSaveOriginal('revision')
+    state.clearResults()
+    await state.saveToOriginal()
+    assert.equal(writes.length, 0)
+    assert.match(state.toast.message, /重新/)
+  } finally { harness.close() }
+})
 
 test('offline example cannot send an ASK answer while claiming no model calls', async () => {
   const harness = mountApp([result('completed', [question])])

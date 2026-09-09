@@ -37,3 +37,6 @@
 ![Intel Mac实际窗口](../../demo/evidence/macos-window-061/macos-window-x64/window.png)
 
 ![Apple芯片Mac实际窗口](../../demo/evidence/macos-window-061/macos-window-arm64/window.png)
+# 最新验收
+
+[0.6.3 保存、全文上下文与一键应用验收](DESKTOP_063_REVIEW.md)

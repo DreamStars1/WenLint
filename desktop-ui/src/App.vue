@@ -4,6 +4,7 @@ import { buildApprovedRevision, orderChanges, resolveSaveTarget } from './revisi
 import { projectAgentEvents } from './agent-events.js'
 import { normalizeDecisions, retainChangeChoices, reviewCompletionState, reviewFingerprint, requiresSegmentedReview } from './review-session.js'
 import ChangeDiff from './ChangeDiff.vue'
+import DocumentContext from './DocumentContext.vue'
 
 const sourceText = ref('')
 const filename = ref('未命名文档.md')
@@ -36,6 +37,9 @@ const settingsOpen = ref(false)
 const confirmOpen = ref(false)
 const workspaceWriteConfirm = ref(false)
 const saveOriginalConfirm = ref(false)
+const saveOriginalMode = ref('revision')
+const appliedDocument = ref(null)
+const fullReviewMode = ref('context')
 const dragActive = ref(false)
 const editingStarted = ref(false)
 const sourceEditor = ref(null)
@@ -99,6 +103,8 @@ const activeRewriteChanges = computed(() => rewriteChanges.value.filter((item) =
 const unconfirmedCount = computed(() => rewriteChanges.value.filter((item) => !changeChoices.value[item.id]).length)
 const rejectedCount = computed(() => rewriteChanges.value.filter((item) => changeChoices.value[item.id] === 'rejected').length)
 const hasAcceptedChanges = computed(() => activeRewriteChanges.value.length > 0)
+const applicableCount = computed(() => rewriteChanges.value.length - rejectedCount.value)
+const canUndoApplication = computed(() => appliedDocument.value && sourceText.value === appliedDocument.value.after && (filePath.value || filename.value) === appliedDocument.value.identity)
 const agentStatus = computed(() => ({ idle: '准备就绪', running: '审查进行中', partial: '部分已检查', complete: demoMode.value ? '离线演示完成' : '全文检查完成', error: '本轮审查未完成', cancelled: '本轮审查已取消' }[reviewState.value]))
 const visibleAgentEvents = computed(() => projectAgentEvents(agentEvents.value, busy.value === 'clarification' ? 'running' : reviewState.value))
 const selectedChange = computed(() => rewriteChanges.value[selectedChangeIndex.value] || null)
@@ -186,6 +192,7 @@ onUnmounted(() => {
 })
 
 function clearSemanticResults() {
+  appliedDocument.value = null
   clarificationDrafts.value = {}
   clarificationError.value = ''
   clarificationId.value = null
@@ -320,6 +327,7 @@ async function writeWorkspaceFile() {
     if (!result.ok) throw new Error(result.error)
     workspace.selectedSha256 = result.sha256
     workspace.loadedText = sourceText.value
+    appliedDocument.value = null
     notify(`已写回 ${result.path}`, 'success')
   } catch (error) {
     notify(error.message, 'error')
@@ -636,6 +644,7 @@ async function submitClarification() {
       selectedChangeIndex.value = rewriteChanges.value.findIndex(d => d.id === item.id)
       activeTab.value = 'revision'
       revisionMode.value = 'full'
+      fullReviewMode.value = 'context'
     } else {
       // The next answer is separate, while the previous answer stays visible.
       clarificationDrafts.value[item.id] = ''
@@ -676,12 +685,39 @@ function originLabel(item) {
 }
 
 function applyRevision() {
-  if (!hasRevision.value || !hasAcceptedChanges.value) return
+  if (busy.value || !hasRevision.value || !hasAcceptedChanges.value) return
   if (revisionStale.value) return notify('正文或场景已变化，请重新复核后再应用', 'error')
+  const applied = { before: sourceText.value, after: revisedText.value, identity: filePath.value || filename.value }
   sourceText.value = revisedText.value
   clearResults()
+  appliedDocument.value = applied
   activeTab.value = 'findings'
   notify('修改稿已放入编辑区，原文件未覆盖', 'success')
+}
+
+function applyAllRevisions() {
+  if (busy.value || revisionStale.value || !hasRevision.value || !applicableCount.value) return
+  const choices = { ...changeChoices.value }
+  for (const item of rewriteChanges.value) {
+    if (choices[item.id] !== 'rejected') choices[item.id] = 'accepted'
+  }
+  try {
+    // Validate the whole batch before mutating either the document or choices.
+    const text = buildApprovedRevision(reviewSource.value, rewriteChanges.value, choices)
+    revisedText.value = text
+    changeChoices.value = choices
+    applyRevision()
+  } catch (error) {
+    notify(`无法一键应用：${error.message}。请逐条保留相互冲突的建议后重试。`, 'error')
+  }
+}
+
+function undoApplication() {
+  if (busy.value || !canUndoApplication.value) return
+  sourceText.value = appliedDocument.value.before
+  appliedDocument.value = null
+  clearResults()
+  notify('已撤销本次应用，正文已恢复；磁盘文件未改变', 'success')
 }
 
 function decideChange(item, choice) {
@@ -701,48 +737,79 @@ function selectRelativeChange(offset) {
   const total = rewriteChanges.value.length
   if (!total) return
   selectedChangeIndex.value = (selectedChangeIndex.value + offset + total) % total
+  fullReviewMode.value = 'context'
 }
 
-async function saveRevisionAs() {
-  if (!hasRevision.value || !hasAcceptedChanges.value || revisionStale.value) return
+function showChangeContext(index) {
+  selectedChangeIndex.value = index
+  revisionMode.value = 'full'
+  fullReviewMode.value = 'context'
+  activeTab.value = 'revision'
+}
+
+async function saveRevisionAs(mode = 'auto') {
+  if (busy.value) return
+  const fromRevision = mode !== 'document' && hasRevision.value
+  if (fromRevision && (!hasAcceptedChanges.value || revisionStale.value)) return
   const dot = filename.value.lastIndexOf('.')
   const stem = dot > 0 ? filename.value.slice(0, dot) : filename.value
   const suffix = dot > 0 ? filename.value.slice(dot) : '.md'
+  const text = fromRevision ? revisedText.value : sourceText.value
+  busy.value = 'saving'
   try {
     const result = await callApi('save_revision', {
-      text: revisedText.value,
+      text,
       suggestedName: `${stem}.revised${suffix}`,
     })
     if (!result.ok) throw new Error(result.error)
     if (!result.cancelled) notify(`已保存到 ${result.path}`, 'success')
   } catch (error) {
     notify(error.message, 'error')
+  } finally {
+    busy.value = ''
   }
 }
 
+function requestSaveOriginal(mode) {
+  if (busy.value || !canSaveOriginal.value) return
+  saveOriginalMode.value = mode
+  saveOriginalConfirm.value = true
+}
+
 async function saveToOriginal() {
+  if (busy.value) return notify('正在处理其他操作，请稍后重新保存', 'error')
+  if (!canSaveOriginal.value) return notify('原文件已失效，请重新打开文件或另存为', 'error')
+  const fromRevision = saveOriginalMode.value === 'revision'
+  if (fromRevision && (!hasRevision.value || revisionStale.value || !hasAcceptedChanges.value)) return notify('修改稿已变化，请重新确认建议后再保存', 'error')
   saveOriginalConfirm.value = false
-  if (!canSaveOriginal.value || revisionStale.value || !hasRevision.value || !hasAcceptedChanges.value) return
+  const text = fromRevision ? revisedText.value : sourceText.value
+  const sourceBeforeSave = sourceText.value
+  busy.value = 'saving'
   try {
     const target = saveTarget.value
     const result = target.method === 'workspace_write'
       ? await callApi(target.method, {
         path: target.path,
-        text: revisedText.value,
+        text,
         expectedSha256: target.expectedSha256,
         confirmed: true,
       })
-      : await callApi(target.method, { text: revisedText.value, confirmed: true })
+      : await callApi(target.method, { text, confirmed: true })
     if (!result.ok) throw new Error(result.error)
     if (workspace.selectedPath) workspace.selectedSha256 = result.sha256
     else standaloneSha256.value = result.sha256
-    sourceText.value = revisedText.value
-    workspace.loadedText = sourceText.value
-    clearResults()
-    activeTab.value = 'findings'
+    if (fromRevision && sourceText.value === sourceBeforeSave) {
+      sourceText.value = text
+      clearResults()
+      activeTab.value = 'findings'
+    }
+    workspace.loadedText = text
+    appliedDocument.value = null
     notify(`已保存到原文件：${result.path}`, 'success')
   } catch (error) {
     notify(error.message, 'error')
+  } finally {
+    busy.value = ''
   }
 }
 
@@ -802,8 +869,14 @@ function actionName(action) {
             <p class="demo-explanation">先体验：查看 Agent 过程 → 逐条确认建议 → 预览修改稿</p>
             <small>支持 TXT、Markdown、RST · 本地检查不会上传正文</small>
           </div>
-          <textarea ref="sourceEditor" v-model="sourceText" :readonly="busy === 'review'" aria-label="待检查正文" spellcheck="false" placeholder="开始输入或粘贴正文……"></textarea>
+          <textarea ref="sourceEditor" v-model="sourceText" :readonly="busy === 'review' || busy === 'saving'" aria-label="待检查正文" spellcheck="false" placeholder="开始输入或粘贴正文……"></textarea>
         </div>
+        <footer v-if="sourceText || editingStarted || canSaveOriginal" class="document-actions" aria-label="正文保存操作">
+          <span :title="filePath">{{ canSaveOriginal ? filename : '当前正文 · 尚未关联原文件' }}</span>
+          <button v-if="canUndoApplication" class="tool-button" :disabled="!!busy" @click="undoApplication">撤销本次应用</button>
+          <button class="tool-button" :disabled="!!busy || !canSaveOriginal" :title="canSaveOriginal ? '保存当前编辑区正文' : '请先打开文件；新文档请使用另存为'" @click="requestSaveOriginal('document')">保存到原文件</button>
+          <button class="tool-button primary" :disabled="!!busy" @click="saveRevisionAs('document')">另存为</button>
+        </footer>
       </article>
 
       <aside class="review-pane">
@@ -886,7 +959,7 @@ function actionName(action) {
                 <p v-if="clarificationId === selectedDecision.id && clarificationError" class="clarification-error" role="alert">{{ clarificationError }}</p>
                 <div class="clarification-actions"><button type="submit" class="tool-button primary" :disabled="!!busy || reviewIsStale || canContinue || browserDemo || demoMode || !clarificationDrafts[selectedDecision.id]?.trim()">{{ busy === 'clarification' && clarificationId === selectedDecision.id ? '正在生成…' : '补充并生成改写' }}</button><button v-if="busy === 'clarification'" type="button" class="tool-button" :disabled="!agentJobId || cancelling" @click="cancelReview">取消</button><button v-if="busy === 'clarification'" type="button" class="tool-button" @click="activeTab = 'agent'">查看输出过程</button></div>
               </form>
-              <button v-if="selectedDecision.action === 'REWRITE'" class="tool-button decision-review" @click="selectedChangeIndex = rewriteChanges.findIndex(item => item.id === selectedDecision.id); activeTab = 'revision'; revisionMode = 'full'">查看上下文并确认这条建议</button>
+              <button v-if="selectedDecision.action === 'REWRITE'" class="tool-button decision-review" @click="showChangeContext(rewriteChanges.findIndex(item => item.id === selectedDecision.id))">查看上下文并确认这条建议</button>
             </div>
           </template>
         </section>
@@ -896,26 +969,27 @@ function actionName(action) {
           <div v-else-if="['complete', 'partial'].includes(reviewState) && !rewriteDecisions.length" class="review-complete"><span class="complete-mark">✓</span><h2>{{ reviewState === 'partial' ? '部分已检查，暂无改写' : '复核完成，正文无变化' }}</h2><p>{{ reviewState === 'partial' ? '剩余段落尚未检查，请继续审查。' : demoMode ? '当前正文未匹配演示中的改写示例；这不代表文档没有问题。' : '模型没有提出可直接应用的改写。' }} 待核实或待补充的信息仍需在“复核结论”中人工处理。</p><small>{{ reviewMeta }}</small></div>
           <div v-else-if="!hasRevision" class="empty-state"><strong>没有可用修改稿</strong><p>本次复核未完成，请检查模型连接后重试。</p></div>
           <template v-else>
-            <div class="revision-toolbar"><div><button :class="{ active: revisionMode === 'changes' }" @click="revisionMode = 'changes'">逐条确认</button><button :class="{ active: revisionMode === 'full' }" @click="revisionMode = 'full'">全文核对</button></div><span>{{ activeRewriteChanges.length }} 已采纳 · {{ unconfirmedCount }} 待确认 · {{ rejectedCount }} 保留</span></div>
-            <p class="approval-hint">只有点击“采纳建议”的修改会进入修改稿。待确认和保留原文的内容不变。</p>
+            <div class="revision-toolbar"><div><button :class="{ active: revisionMode === 'changes' }" @click="revisionMode = 'changes'">逐条确认</button><button :class="{ active: revisionMode === 'full' }" @click="showChangeContext(selectedChangeIndex)">全文核对</button></div><span>{{ activeRewriteChanges.length }} 已采纳 · {{ unconfirmedCount }} 待确认 · {{ rejectedCount }} 保留</span><button class="tool-button bulk-apply" :disabled="!!busy || revisionStale || !applicableCount" @click="applyAllRevisions">一键应用 {{ applicableCount }} 条</button></div>
+            <p class="approval-hint">可逐条采纳，或一键应用全部可改写建议。已保留原文、待补充和待核实的内容不改动；应用后可撤销，再保存文件。</p>
             <div v-if="revisionMode === 'changes'" class="changes-list">
               <div v-for="(item, index) in rewriteChanges" :key="item.id" :class="['diff-block', changeChoices[item.id] || 'pending']">
                 <header><span>{{ item.rule }} · 建议 {{ index + 1 }}</span><strong :class="['choice-badge', changeChoices[item.id] || 'pending']">{{ choiceLabel(item) }}</strong></header>
-                <div class="diff-actions"><span class="decision-target">建议 {{ index + 1 }}</span><button @click="selectedChangeIndex = index; revisionMode = 'full'">检查上下文</button><button v-if="changeChoices[item.id]" :disabled="revisionStale" @click="decideChange(item, null)">撤销决定</button><button :disabled="revisionStale || changeChoices[item.id] === 'rejected'" @click="decideChange(item, 'rejected')">保留原文</button><button class="accept-button" :disabled="revisionStale || changeChoices[item.id] === 'accepted'" @click="decideChange(item, 'accepted')">{{ changeChoices[item.id] === 'accepted' ? '已采纳' : '采纳建议' }}</button></div>
+                <div class="diff-actions"><span class="decision-target">建议 {{ index + 1 }}</span><button @click="showChangeContext(index)">检查上下文</button><button v-if="changeChoices[item.id]" :disabled="revisionStale" @click="decideChange(item, null)">撤销决定</button><button :disabled="revisionStale || changeChoices[item.id] === 'rejected'" @click="decideChange(item, 'rejected')">保留原文</button><button class="accept-button" :disabled="revisionStale || changeChoices[item.id] === 'accepted'" @click="decideChange(item, 'accepted')">{{ changeChoices[item.id] === 'accepted' ? '已采纳' : '采纳建议' }}</button></div>
                 <div class="diff-reason"><strong>修改原因</strong><p>{{ item.reason }}</p></div>
                 <ChangeDiff :source="reviewSource" :before="item.before" :after="item.after" :source-start="item.source_start" />
               </div>
             </div>
             <div v-else class="full-review">
-              <section v-if="selectedChange" class="context-inspector">
+              <section v-if="selectedChange" class="context-summary">
                 <div class="context-heading"><div><strong>变更 {{ selectedChangeIndex + 1 }} / {{ rewriteChanges.length }}</strong><span>{{ selectedChange.rule }}</span><em v-if="originLabel(selectedChange)">{{ originLabel(selectedChange) }}</em></div><div><button title="上一处" @click="selectRelativeChange(-1)">←</button><button title="下一处" @click="selectRelativeChange(1)">→</button></div></div>
-                <p class="context-reason"><strong>修改原因</strong>{{ selectedChange.reason }}</p>
-                <ChangeDiff :source="reviewSource" :before="selectedChange.before" :after="selectedChange.after" :source-start="selectedChange.source_start" />
+                <details class="context-explanation"><summary>查看修改原因</summary><p>{{ selectedChange.reason }}</p></details>
+                <div class="reading-modes"><button :class="{ active: fullReviewMode === 'context' }" @click="fullReviewMode = 'context'">全文上下文 · 本条差异</button><button :class="{ active: fullReviewMode === 'revision' }" @click="fullReviewMode = 'revision'">已采纳后的全文</button></div>
               </section>
+              <DocumentContext v-if="selectedChange && fullReviewMode === 'context'" :source="reviewSource" :change="selectedChange" />
+              <textarea v-else :value="revisedText" class="revision-editor" readonly spellcheck="false" aria-label="完整修改稿"></textarea>
               <div v-if="selectedChange" class="diff-actions context-actions"><span>建议 {{ selectedChangeIndex + 1 }} · {{ choiceLabel(selectedChange) }}</span><button v-if="changeChoices[selectedChange.id]" :disabled="revisionStale" @click="decideChange(selectedChange, null)">撤销决定</button><button :disabled="revisionStale || changeChoices[selectedChange.id] === 'rejected'" @click="decideChange(selectedChange, 'rejected')">保留原文</button><button class="accept-button" :disabled="revisionStale || changeChoices[selectedChange.id] === 'accepted'" @click="decideChange(selectedChange, 'accepted')">采纳建议</button></div>
-              <textarea :value="revisedText" class="revision-editor" readonly spellcheck="false" aria-label="完整修改稿"></textarea>
             </div>
-            <footer class="revision-actions"><span class="save-hint">{{ !hasAcceptedChanges ? '请先采纳一条建议' : `仅应用 ${activeRewriteChanges.length} 条已采纳建议` }}</span><button class="tool-button" :disabled="!canSaveOriginal || revisionStale || !hasAcceptedChanges" @click="saveOriginalConfirm = true">保存</button><button class="tool-button" :disabled="revisionStale || !hasAcceptedChanges" @click="saveRevisionAs">另存为</button><button class="tool-button primary" :disabled="revisionStale || !hasAcceptedChanges" @click="applyRevision">应用到正文</button></footer>
+            <footer class="revision-actions"><span class="save-hint">{{ !hasAcceptedChanges ? '请先采纳建议，或使用一键应用' : `修改稿含 ${activeRewriteChanges.length} 条已采纳建议` }}</span><button class="tool-button" :disabled="!!busy || !canSaveOriginal || revisionStale || !hasAcceptedChanges" @click="requestSaveOriginal('revision')">保存到原文件</button><button class="tool-button" :disabled="!!busy || revisionStale || !hasAcceptedChanges" @click="saveRevisionAs">另存为</button><button class="tool-button primary" :disabled="!!busy || revisionStale || !hasAcceptedChanges" @click="applyRevision">应用到正文</button></footer>
           </template>
         </section>
       </aside>
@@ -950,9 +1024,9 @@ function actionName(action) {
     <div v-if="saveOriginalConfirm" class="modal-backdrop" @click.self="saveOriginalConfirm = false">
       <section class="modal-card">
         <h2>保存到原文件</h2>
-        <p>这会用当前修改稿替换以下文件：</p>
+        <p>这会用{{ saveOriginalMode === 'document' ? '当前编辑区正文' : '当前修改稿' }}替换以下文件：</p>
         <code>{{ filePath }}</code>
-        <ul><li>仅写入 {{ activeRewriteChanges.length }} 条已采纳建议；待确认和保留原文的建议不会写入</li><li>写入前会校验文件是否被其他程序修改</li><li>该操作会覆盖原文件，建议使用 Git 或保留备份</li></ul>
+        <ul><li v-if="saveOriginalMode === 'revision'">仅写入 {{ activeRewriteChanges.length }} 条已采纳建议；待确认和保留原文的建议不会写入</li><li v-else>保存编辑区中显示的全部内容，包括手动编辑</li><li>写入前会校验文件是否被其他程序修改</li><li>该操作会覆盖原文件，建议使用 Git 或保留备份</li></ul>
         <div class="modal-actions"><button class="tool-button" @click="saveOriginalConfirm = false">取消</button><button class="tool-button primary" @click="saveToOriginal">确认保存</button></div>
       </section>
     </div>
