@@ -61,10 +61,6 @@ python -m pip install -e ".[test,desktop-build]"
 
 仓库内置了可重复验证的 [桌面版演示包](demo/README.md)，包含故意保留问题的待审查文档、多文件工作区、事实基线、静态结果快照、参考修改稿和人工验收清单。在仓库根目录运行 `python demo/verify_demo.py` 可验证材料未漂移。
 
-### 参赛材料
-
-本项目面向 [2026 上海开源软件应用创新大赛](https://www.oschina.net/os2026/) 准备，建议选报开源 AI 工具赛道。仓库内提供 [项目介绍、架构、治理、验证与交付索引](docs/competition/README.md)；报名、邮件提交和视频由参赛人完成。
-
 ### Agent Skill（Codex / Cursor，npx skills）
 
 本机需有 Node.js（提供 `npx`）并能访问 GitHub。按使用的工具选择安装命令：
