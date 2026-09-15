@@ -65,13 +65,25 @@ python -m pip install -e ".[test,desktop-build]"
 
 本项目面向 [2026 上海开源软件应用创新大赛](https://www.oschina.net/os2026/) 准备，建议选报开源 AI 工具赛道。仓库内提供 [项目介绍、架构、治理、验证与交付索引](docs/competition/README.md)；报名、邮件提交和视频由参赛人完成。
 
-### Codex Skill（npx skills）
+### Agent Skill（Codex / Cursor，npx skills）
+
+本机需有 Node.js（提供 `npx`）并能访问 GitHub。按使用的工具选择安装命令：
 
 ```bash
+# 安装到 Codex（用户级，跨项目可用）
 npx skills add DreamStars1/WenLint --skill wenlint --agent codex --global
+
+# 安装到 Cursor（用户级，跨项目可用）
+npx skills add DreamStars1/WenLint --skill wenlint --agent cursor --global
+
+# 只列出仓库中的 Skill，不安装
+npx skills add DreamStars1/WenLint --list
 ```
 
-`npx skills` 只分发 Skill 文档与工作流，**不会**安装 Python 运行时或 `lark-cli`。飞书检查前请确认 `wenlint-feishu` 与 `lark-cli` 可用。
+省略 `--global` 可安装到当前项目。支持的 Agent 和参数见 [skills CLI 文档](https://github.com/vercel-labs/skills#supported-agents)。
+
+`npx skills` 只分发 Skill 文档与工作流，**不会**安装 Python 运行时、WenLint Python 引擎或 `lark-cli`。
+运行静态检查前，还需按上方“Python 引擎”一节安装 `wenlint`；飞书检查前请确认 `wenlint-feishu` 与 `lark-cli` 可用。
 
 若 `lark-cli` 报 executable missing，常见原因是当前 shell 的 Node/PATH 与安装 CLI 的 Node 版本不一致（例如 NVM 未切换）。请自行切换到安装了 `lark-cli` 的 Node 版本，或设置 `WENLINT_LARK_CLI` 指向可执行文件；WenLint **不会**自动安装、扫描用户目录或执行 `nvm use`。
 
