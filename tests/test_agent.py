@@ -311,7 +311,10 @@ def test_review_does_not_attach_evidence_to_wrong_adjacent_finding(quote_full_do
     platform = next(item for item in result.decisions if item.rule == "SEMANTIC_PLATFORM")
     assert platform.related_finding_indexes == ()
     assert platform.before == "系统仍然支持 Windows 10。"
-    assert result.revised_text == "计划大概明日发布。\n系统支持 Windows 11。"
+    assert platform.action == "ASK"
+    assert platform.after == ""
+    assert "Windows 11" in platform.reason
+    assert result.revised_text == source
 
 
 @pytest.mark.parametrize("related", [[1], [1, 2]])

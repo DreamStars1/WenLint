@@ -22,6 +22,7 @@ from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from .scanner import scan_text
+from .rewrite_safety import numeric_literals_changed
 from .workspace_agent import WorkspaceAgentAccess
 
 
@@ -130,6 +131,8 @@ COMMON_PROMPT = """你是 WenLint 内置的中文文档审查 Agent。
 3. KEEP 表示误报或语境合理；REWRITE 仅用于可以从现有上下文可靠修复的问题。
 4. 特别核对讨论过程、纠偏说明，以及“先、再、不再、仍然、上述、前面”等依赖旧上下文的措辞：判断文档独立阅读时是否仍清楚，不能只做机械替换。
 5. 保留 Markdown/RST 结构、代码、链接、专有名词和原意；只做必要修改。
+6. 输出改写前逐项核对人名、日期、数字、引文、否定、范围限定和责任主体，不能改变事实或把假设写成经历。无法确认时返回 VERIFY/ASK，不用自评分代替查证。
+7. 结合 profile 和正文已有文风判断；仅在作者提供目标读者、渠道或样文时据此校准。不得统一口语化，不按三项列举、句长一致、被动句或标点次数判错，不强迫删除合理的不确定性。
 
 只能返回一个 JSON 对象，不得附带解释或 Markdown 代码围栏。格式：
 {"summary":"简要结论","decisions":[{"finding_index":1,"related_finding_indexes":[],"rule":"规则ID或SEMANTIC_类别","action":"KEEP|REWRITE|VERIFY|ASK","reason":"理由","before":"可唯一定位的原文片段","after":"REWRITE 后的文本；其他动作必须为空或等于原文"}]}
@@ -146,6 +149,7 @@ STATIC_REVIEW_PROMPT = COMMON_PROMPT + """
 SEMANTIC_REVIEW_PROMPT = COMMON_PROMPT + """
 
 当前通道必须脱离正则候选，对 document 做一次独立的全文语义审查。重点发现逻辑断裂、指代不明、遗漏前提、前后矛盾、语气或结论不当，以及静态规则没有覆盖的问题。
+补充检查：空泛评价是否缺少具体对象、行为或依据；连续短句之间是否缺失理解所需的因果、条件或转折；递进或对比是否只是重复评价。只在确实影响理解时报告，正常步骤、并列事实、真实对比和文体要求的重复结构应保留。关系或事实无法从资料确认时 VERIFY/ASK，不擅自补因果、数据或作者经历。
 只报告确实存在的问题；没有问题时 decisions 返回空数组。每条问题的 finding_index 必须为 null，rule 必须以 SEMANTIC_ 开头，action 只能是 REWRITE、VERIFY 或 ASK。related_finding_indexes 必须列出与该问题属于同一问题的静态候选编号；真正独立的新问题必须为空数组。不要把仅仅位于同一句话视为同一问题。
 优先报告最多8个影响理解或事实准确性的独立问题，合并同一根因，避免重复静态通道的措辞建议。
 """
@@ -921,6 +925,12 @@ def _resolve_rewrite_conflicts(
             merged.append(item)
             continue
         start, end = _unique_span(source, item)
+        if numeric_literals_changed(item.before, item.after):
+            merged.append(replace(
+                item, action="ASK", after="",
+                reason="改写涉及数字、日期或版本等数值文本的增删或变化，请补充依据并确认目标表述。" + item.reason,
+            ))
+            continue
         if any(start < other_end and end > other_start for other_start, other_end in occupied):
             merged.append(
                 ReviewDecision(
